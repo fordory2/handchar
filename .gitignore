@@ -1,4 +1,6 @@
 *
 !*.py
-!.gitignore
+!/.gitignore
 !*/
+.idea/
+.spec-workflow/
