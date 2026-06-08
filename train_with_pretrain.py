@@ -9,10 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import make_hand_char, ECA as ECA_ATTN
 from data_utils import load_split_data, CharDataset, collate_with_augment
 from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE
+from training_utils import compute_pair_accuracy
 
 EPOCHS = 60
-CONFUSABLE = [("0","O"),("0","o"),("O","o"),("1","I"),("1","l"),
-              ("I","l"),("5","S"),("C","c")]
 
 
 class Classifier(make_hand_char(ECA_ATTN)):
@@ -69,22 +68,11 @@ if __name__ == "__main__":
               (done, EPOCHS, bar, total_loss / len(train_loader), acc), end="", flush=True)
     print()
 
-    # Per-pair eval
-    net.eval()
-    pair_stats = {("%s/%s" % (a, b)): {"c": 0, "t": 0} for a, b in CONFUSABLE}
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images = images.to(DEVICE); preds = net(images).argmax(1).cpu()
-            for i in range(len(labels)):
-                tl = i2l[labels[i].item()]; pl = i2l[preds[i].item()]
-                for a, b in CONFUSABLE:
-                    if tl in (a, b) and pl in (a, b):
-                        k = "%s/%s" % (a, b); pair_stats[k]["t"] += 1
-                        if pl == tl: pair_stats[k]["c"] += 1
+    # Per-pair eval (复用 training_utils)
+    pair_acc = compute_pair_accuracy(net, test_loader, i2l)
     print("Confusable pairs:")
-    for a, b in CONFUSABLE:
-        k = "%s/%s" % (a, b); s = pair_stats[k]
-        if s["t"] > 0: print("  %s vs %s: %.3f (%d/%d)" % (a, b, s["c"]/s["t"], s["c"], s["t"]))
+    for k, v in pair_acc.items():
+        print("  %s: %.3f" % (k, v))
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     torch.save(net.state_dict(), "output/pretrained_classifier_%s.pth" % ts)

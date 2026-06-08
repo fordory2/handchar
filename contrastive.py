@@ -8,38 +8,32 @@ import os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import make_hand_char, SE as SE_ATTENTION
 from data_utils import load_split_data, CharDataset, collate_with_augment
-from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE
+from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS
 from training_utils import LabelSmoothing
 
-CONFUSABLE = [("0","O"),("0","o"),("O","o"),("1","I"),("1","l"),
-              ("I","l"),("5","S"),("C","c")]
 CONTRAS_WEIGHT = 0.1
 EPOCHS = 60
 
 
-def contrastive_loss(features, label_tensor, confusable_pairs, margin=0.2):
+def build_pair_lookup(pair_set, num_classes, device):
+    table = torch.zeros(num_classes, num_classes, dtype=torch.bool, device=device)
+    for a, b in pair_set:
+        table[a, b] = True
+    return table
+
+
+def contrastive_loss(features, label_tensor, pair_table, margin=0.2):
     """Triplet-style 向量化: 混淆对推远, 同类拉近"""
     normed = functional.normalize(features, dim=1)
     batch_size = int(normed.shape[0])
-    # 全对余弦距离矩阵 (向量化)
-    dist_matrix = 1.0 - normed @ normed.T  # [B, B]
-    # 上三角 mask
-    tri_mask = torch.triu(torch.ones(batch_size, batch_size, device=features.device), diagonal=1)
-    # 同类 mask
-    same_class = label_tensor.unsqueeze(0) == label_tensor.unsqueeze(1)
-    same_class = same_class & tri_mask.bool()
-    # 混淆对 mask
-    conf_mask = torch.zeros(batch_size, batch_size, dtype=torch.bool, device=features.device)
-    for i in range(batch_size):
-        for j in range(i + 1, batch_size):
-            if (label_tensor[i].item(), label_tensor[j].item()) in confusable_pairs:
-                conf_mask[i, j] = True
-    # 同类损失: 拉近距离
+    dist_matrix = 1.0 - normed @ normed.T
+    tri_mask = torch.triu(torch.ones(batch_size, batch_size, device=features.device), diagonal=1).bool()
+    same_class = (label_tensor.unsqueeze(0) == label_tensor.unsqueeze(1)) & tri_mask
+    conf_mask = pair_table[label_tensor.unsqueeze(0), label_tensor.unsqueeze(1)] & tri_mask
     if same_class.any():
         pos_loss = dist_matrix[same_class].mean()
     else:
         pos_loss = torch.tensor(0.0, device=features.device)
-    # 混淆对损失: 推远超过 margin
     if conf_mask.any():
         neg_loss = torch.clamp(margin - dist_matrix[conf_mask], min=0).mean()
     else:
@@ -62,9 +56,10 @@ if __name__ == "__main__":
     os.makedirs("output", exist_ok=True)
     train_data, _, test_data, all_labels, l2i = load_split_data()
     pair_set = set()
-    for a, b in CONFUSABLE:
+    for a, b in CONFUSABLE_PAIRS:
         if a in l2i and b in l2i:
             pair_set.add((l2i[a], l2i[b])); pair_set.add((l2i[b], l2i[a]))
+    pair_table = build_pair_lookup(pair_set, NUM_CLASSES, DEVICE)
 
     train_ds = CharDataset(train_data, train=True)
     test_ds = CharDataset(test_data, train=False)
@@ -85,7 +80,7 @@ if __name__ == "__main__":
             opt.zero_grad()
             logits, feats = net(images)
             cls_loss = cls_criterion(logits, labels)
-            cnt_loss = contrastive_loss(feats, labels, pair_set)
+            cnt_loss = contrastive_loss(feats, labels, pair_table)
             loss = cls_loss + CONTRAS_WEIGHT * cnt_loss
             loss.backward()
             opt.step()

@@ -8,8 +8,8 @@ import os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import HandCharNet
 from data_utils import load_split_data, CharDataset, collate_with_augment
-from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE
-from training_utils import evaluate
+from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS
+from training_utils import evaluate, compute_pair_accuracy
 
 EPOCHS = 60
 FOCAL_GAMMA = 2.0  # 聚焦强度: 越大越关注困难样本
@@ -68,30 +68,11 @@ if __name__ == "__main__":
               end="", flush=True)
     print()
 
-    # Per-class eval
-    net.eval()
-    correct = {c: 0 for c in range(NUM_CLASSES)}
-    total = {c: 0 for c in range(NUM_CLASSES)}
-    confusable = [("0","O"),("0","o"),("O","o"),("1","I"),("1","l"),
-                  ("I","l"),("5","S"),("C","c")]
-    pair_stats = {("%s/%s" % (a, b)): {"c": 0, "t": 0} for a, b in confusable}
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images = images.to(DEVICE)
-            preds = net(images).argmax(1).cpu()
-            for i in range(len(labels)):
-                t_lbl = labels[i].item(); p_lbl = preds[i].item()
-                total[t_lbl] += 1
-                if p_lbl == t_lbl: correct[t_lbl] += 1
-                for a, b in confusable:
-                    if i2l[t_lbl] in (a, b) and i2l[p_lbl] in (a, b):
-                        k = "%s/%s" % (a, b); pair_stats[k]["t"] += 1
-                        if p_lbl == t_lbl: pair_stats[k]["c"] += 1
-
+    # Per-pair eval (复用 training_utils)
+    pair_acc = compute_pair_accuracy(net, test_loader, i2l)
     print("Confusable pairs:")
-    for a, b in confusable:
-        k = "%s/%s" % (a, b); s = pair_stats[k]
-        if s["t"] > 0: print("  %s vs %s: %.3f (%d/%d)" % (a, b, s["c"]/s["t"], s["c"], s["t"]))
+    for k, v in pair_acc.items():
+        print("  %s: %.3f" % (k, v))
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     torch.save(net.state_dict(), "output/focal_%s.pth" % timestamp)

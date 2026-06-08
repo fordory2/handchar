@@ -8,14 +8,13 @@ import os, sys, datetime, csv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import make_hand_char, ECA as ECA_ATTN
 from data_utils import load_split_data, CharDataset, collate_with_augment
-from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE
+from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS
+from training_utils import compute_pair_accuracy
 
 AUX_CLASSES = 3
 CONTRAS_WEIGHT = 0.1
 AUX_WEIGHT = 0.1
 EPOCHS = 60
-CONFUSABLE = [("0","O"),("0","o"),("O","o"),("1","I"),("1","l"),
-              ("I","l"),("5","S"),("C","c")]
 
 
 def get_aux_label(file_label):
@@ -24,23 +23,27 @@ def get_aux_label(file_label):
     return 2
 
 
-def contrastive_loss(feats, lbls, pairs, margin=0.2):
+def build_pair_lookup(pair_set, num_classes, device):
+    """预构建 [C, C] 的混淆对查找表, 训练时用 gather 实现 O(B^2) 向量化."""
+    table = torch.zeros(num_classes, num_classes, dtype=torch.bool, device=device)
+    for a, b in pair_set:
+        table[a, b] = True
+    return table
+
+
+def contrastive_loss(feats, lbls, pair_table, margin=0.2):
     normed = F.normalize(feats, dim=1)
     dist = 1.0 - normed @ normed.T
     n = len(lbls)
     tri = torch.triu(torch.ones(n, n, device=feats.device), diagonal=1).bool()
     same = (lbls.unsqueeze(0) == lbls.unsqueeze(1)) & tri
-    conf = torch.zeros(n, n, dtype=torch.bool, device=feats.device)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if (lbls[i].item(), lbls[j].item()) in pairs:
-                conf[i, j] = True
+    conf = pair_table[lbls.unsqueeze(0), lbls.unsqueeze(1)] & tri
     pos = dist[same].mean() if same.any() else torch.tensor(0.0, device=feats.device)
     neg = torch.clamp(margin - dist[conf], min=0).mean() if conf.any() else torch.tensor(0.0, device=feats.device)
     return pos + neg
 
 
-def train_epoch(model, loader, opt, cls_crit, aux_crit, pair_set, idx2label):
+def train_epoch(model, loader, opt, cls_crit, aux_crit, pair_table, idx2label):
     model.train()
     t, c, a, ct = 0.0, 0.0, 0.0, 0.0
     for images, labels in loader:
@@ -50,7 +53,7 @@ def train_epoch(model, loader, opt, cls_crit, aux_crit, pair_set, idx2label):
         logits, flat, aux_logits = model(images)
         cls_loss = cls_crit(logits, labels)
         aux_loss = aux_crit(aux_logits, aux_lbls)
-        cnt_loss = contrastive_loss(flat, labels, pair_set)
+        cnt_loss = contrastive_loss(flat, labels, pair_table)
         loss = cls_loss + AUX_WEIGHT * aux_loss + CONTRAS_WEIGHT * cnt_loss
         loss.backward(); opt.step()
         t += loss.item(); c += cls_loss.item()
@@ -65,9 +68,10 @@ if __name__ == "__main__":
     i2l = {v: k for k, v in l2i.items()}
 
     pair_set = set()
-    for a, b in CONFUSABLE:
+    for a, b in CONFUSABLE_PAIRS:
         if a in l2i and b in l2i:
             pair_set.add((l2i[a], l2i[b])); pair_set.add((l2i[b], l2i[a]))
+    pair_table = build_pair_lookup(pair_set, NUM_CLASSES, DEVICE)
 
     train_ds = CharDataset(train_data, train=True)
     test_ds = CharDataset(test_data, train=False)
@@ -76,13 +80,17 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_ds, BATCH_SIZE, shuffle=False, num_workers=0)
 
     class DualHeadNet(make_hand_char(ECA_ATTN)):
+        def __init__(self, num_classes):
+            super().__init__(num_classes)
+            self.aux_head = nn.Linear(160, AUX_CLASSES)
+
         def forward(self, x):
             x = self.direction(self.stem(x))
             x = self.shape2(self.shape1(x))
             fm = self.detail(x)
             flat = F.adaptive_avg_pool2d(fm, 1).flatten(1)
             main_logits = self.head[2:](self.head[1](flat))
-            aux_logits = nn.Linear(160, AUX_CLASSES).to(DEVICE)(flat)
+            aux_logits = self.aux_head(flat)
             return main_logits, flat, aux_logits
 
     net = DualHeadNet(NUM_CLASSES).to(DEVICE)
@@ -92,7 +100,7 @@ if __name__ == "__main__":
     sched = CosineAnnealingLR(opt, T_max=EPOCHS)
 
     for ep in range(EPOCHS):
-        tl, cl, al, cnt = train_epoch(net, train_loader, opt, cls_crit, aux_crit, pair_set, i2l)
+        tl, cl, al, cnt = train_epoch(net, train_loader, opt, cls_crit, aux_crit, pair_table, i2l)
         sched.step()
         net.eval(); corr, tot = 0, 0
         with torch.no_grad():
@@ -107,22 +115,19 @@ if __name__ == "__main__":
               (done, EPOCHS, bar, cl, al, cnt, acc), end="", flush=True)
     print()
 
-    # Per-pair eval
-    net.eval()
-    pair_stats = {("%s/%s" % (a, b)): {"c": 0, "t": 0} for a, b in CONFUSABLE}
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images = images.to(DEVICE); preds = net(images)[0].argmax(1).cpu()
-            for i in range(len(labels)):
-                tl = i2l[labels[i].item()]; pl = i2l[preds[i].item()]
-                for a, b in CONFUSABLE:
-                    if tl in (a, b) and pl in (a, b):
-                        k = "%s/%s" % (a, b); pair_stats[k]["t"] += 1
-                        if pl == tl: pair_stats[k]["c"] += 1
+    # Per-pair eval (复用 training_utils, 用 wrapper 取主 logits)
+    class _MainHeadWrapper(nn.Module):
+        def __init__(self, multi_head_net):
+            super().__init__()
+            self.multi_head_net = multi_head_net
+
+        def forward(self, x):
+            return self.multi_head_net(x)[0]
+
+    pair_acc = compute_pair_accuracy(_MainHeadWrapper(net), test_loader, i2l)
     print("Confusable pairs:")
-    for a, b in CONFUSABLE:
-        k = "%s/%s" % (a, b); s = pair_stats[k]
-        if s["t"] > 0: print("  %s vs %s: %.3f (%d/%d)" % (a, b, s["c"]/s["t"], s["c"], s["t"]))
+    for k, v in pair_acc.items():
+        print("  %s: %.3f" % (k, v))
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     torch.save(net.state_dict(), "output/combined_%s.pth" % ts)

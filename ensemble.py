@@ -6,8 +6,8 @@ import numpy as np, os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import HandCharNetCA, HandCharNetNoDirection
 from data_utils import load_split_data, CharDataset
-from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE
-from training_utils import evaluate, compute_pair_accuracy
+from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS
+from training_utils import evaluate
 
 MODEL_PATHS = {
     "ca": "output/model_Full+CA_*.pth",
@@ -68,24 +68,19 @@ def main():
     print("Delta vs CA:  %+.4f" % (ens_acc - ca_acc))
     print("Delta vs ND:  %+.4f" % (ens_acc - nd_acc))
 
-    # 逐混淆对
+    # 逐混淆对 (基于上面 ensemble_predict 已得到的 preds/labels)
     print("\nConfusable pairs:")
-    pair_acc = compute_pair_accuracy(
-        type("Fake", (), {"eval": lambda: None, "to": lambda d: None}), test_loader, i2l)
-    # Re-evaluate with ensemble manually
-    confusable = [("0","O"),("0","o"),("O","o"),("1","I"),("1","l"),
-                  ("I","l"),("5","S"),("C","c")]
-    pair_stats = {("%s/%s" % (a,b)): {"c":0,"t":0} for a,b in confusable}
+    pair_stats = {("%s/%s" % (a, b)): {"c": 0, "t": 0} for a, b in CONFUSABLE_PAIRS}
     for i in range(len(labels)):
         tl = i2l[labels[i]]; pl = i2l[preds[i]]
-        for a,b in confusable:
-            if tl in (a,b) and pl in (a,b):
-                k = "%s/%s"%(a,b); pair_stats[k]["t"]+=1
-                if pl==tl: pair_stats[k]["c"]+=1
-    for a,b in confusable:
-        k = "%s/%s"%(a,b); s = pair_stats[k]
-        if s["t"]>0:
-            print("  %s vs %s: %.3f (%d/%d)" % (a,b, s["c"]/s["t"], s["c"], s["t"]))
+        for a, b in CONFUSABLE_PAIRS:
+            if tl in (a, b) and pl in (a, b):
+                k = "%s/%s" % (a, b); pair_stats[k]["t"] += 1
+                if pl == tl: pair_stats[k]["c"] += 1
+    for a, b in CONFUSABLE_PAIRS:
+        k = "%s/%s" % (a, b); s = pair_stats[k]
+        if s["t"] > 0:
+            print("  %s vs %s: %.3f (%d/%d)" % (a, b, s["c"]/s["t"], s["c"], s["t"]))
 
 
 if __name__ == "__main__":

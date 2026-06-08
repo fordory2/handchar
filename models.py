@@ -265,10 +265,6 @@ class HandCharNetCARegularized(make_hand_char(CA, dropout_rate=0.4)):
     pass
 
 
-class HandCharNetCA(make_hand_char(CA)):
-    pass
-
-
 class HandCharNetNoDirection(make_hand_char(SE, use_direction=False)):
     pass
 

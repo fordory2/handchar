@@ -9,12 +9,10 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models import make_hand_char, ECA as ECA_ATTN
 from data_utils import load_split_data, CharDataset, collate_with_augment
-from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE
+from project_constants import DEVICE, NUM_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS
 
 EPOCHS = 60
 CLASSES_PER_BATCH = 5
-CONFUSABLE = [("0","O"),("0","o"),("O","o"),("1","I"),("1","l"),
-              ("I","l"),("5","S"),("C","c")]
 
 
 class EpisodicSampler(Sampler):
@@ -55,7 +53,7 @@ if __name__ == "__main__":
 
     # 混淆类索引
     pair_idx = set()
-    for a, b in CONFUSABLE:
+    for a, b in CONFUSABLE_PAIRS:
         if a in l2i and b in l2i:
             pair_idx.add((l2i[a], l2i[b]))
     pair_idx_list = list(pair_idx)
@@ -83,10 +81,11 @@ if __name__ == "__main__":
         for images, labels in train_loader:
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             opt.zero_grad()
-            loss = criterion(net(images), labels)
+            logits = net(images)
+            loss = criterion(logits, labels)
             loss.backward(); opt.step()
             total_loss += loss.item()
-            correct += (net(images).argmax(1) == labels).sum().item()
+            correct += (logits.argmax(1) == labels).sum().item()
             total += len(labels)
         sched.step()
         net.eval(); t_corr, t_tot = 0, 0
@@ -99,7 +98,7 @@ if __name__ == "__main__":
         done = ep + 1
         bar = "#" * (done * 20 // EPOCHS) + "-" * (20 - done * 20 // EPOCHS)
         print("\r  Ep%2d/%d [%s] loss=%.3f train=%.3f test=%.4f" %
-              (done, EPOCHS, bar, total_loss / batches_per_epoch, correct/total, acc),
+              (done, EPOCHS, bar, total_loss / len(train_loader), correct/total, acc),
               end="", flush=True)
     print()
 
