@@ -2,5 +2,3 @@
 !*.py
 !/.gitignore
 !*/
-.idea/
-.spec-workflow/
