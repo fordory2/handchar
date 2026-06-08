@@ -23,13 +23,12 @@ class FocalLoss:
     def __call__(self, logits, targets):
         n = logits.shape[1]
         log_probs = F.log_softmax(logits, -1)
-        probs = log_probs.exp()
         with torch.no_grad():
             smooth_targets = torch.full_like(log_probs, self.smoothing / (n - 1))
             smooth_targets.scatter_(1, targets.unsqueeze(1), 1 - self.smoothing)
-            # p_t = sum(y * p), 然后 focal_weight = (1 - p_t)^gamma
-            p_t = (probs * smooth_targets).sum(dim=-1)
-            focal_weight = (1 - p_t).pow(self.gamma).unsqueeze(-1)
+            # 标准 focal: p_t 取真类概率 (不含 label smoothing)
+            true_prob = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1).exp()
+            focal_weight = (1 - true_prob).pow(self.gamma).unsqueeze(-1)
         return -(smooth_targets * log_probs * focal_weight).sum(-1).mean()
 
 

@@ -11,7 +11,11 @@ from torch.utils.data import DataLoader, Dataset
 
 from project_constants import NUM_WORKERS, PIN_MEMORY
 
-DATA_DIR = 'D:/课程设计1—62类手写数字识别/English-Handwritten-Characters-Dataset'
+DATA_DIR = os.environ.get(
+    "HANDCHAR_DATA_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "English-Handwritten-Characters-Dataset"),
+)
 RESAMPLE_FILTER = Image.Resampling.LANCZOS
 
 
