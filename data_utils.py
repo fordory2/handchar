@@ -89,12 +89,12 @@ class Augment:
                 dtype=torch.bool, device=device,
             )
 
-        # 仿射: 角度 ±7° (旋转敏感类清零角度, 位移/缩放保留)
-        angles = torch.empty(batch_size, device=device).uniform_(-7, 7) * 3.14159 / 180
+        # 仿射: 角度 ±5° (旋转敏感类清零角度, 位移/缩放保留)
+        angles = torch.empty(batch_size, device=device).uniform_(-5, 5) * 3.14159 / 180
         angles = angles.masked_fill(sensitive_mask('rotate'), 0.0)
         cos_a, sin_a = angles.cos(), angles.sin()
-        dx = torch.empty(batch_size, device=device).uniform_(-4, 4) / width * 2
-        dy = torch.empty(batch_size, device=device).uniform_(-4, 4) / height * 2
+        dx = torch.empty(batch_size, device=device).uniform_(-6, 6) / width * 2
+        dy = torch.empty(batch_size, device=device).uniform_(-6, 6) / height * 2
         scale = torch.empty(batch_size, device=device).uniform_(0.9, 1.1)
         theta = torch.zeros(batch_size, 2, 3, device=device)
         theta[:, 0, 0] = scale * cos_a
@@ -113,23 +113,13 @@ class Augment:
             noise = torch.randn_like(batch[noise_mask]) * 0.03
             batch[noise_mask] = torch.clamp(batch[noise_mask] + noise, 0.0, 1.0)
 
-        # 矩形擦除 (30%): 敏感单笔画类上限 10%, 其它上限 20%
-        erase_mask = torch.rand(batch_size, device=device) < 0.3
-        if erase_mask.any():
-            big_sens = sensitive_mask('erase_big')
-            indices = erase_mask.nonzero(as_tuple=True)[0]
-            for idx in indices:
-                cap = 0.10 if bool(big_sens[idx]) else 0.20
-                h_size = int(height * random.uniform(0.05, cap))
-                w_size = int(width * random.uniform(0.05, cap))
-                y0 = random.randint(0, height - h_size)
-                x0 = random.randint(0, width - w_size)
-                batch[idx, :, y0:y0+h_size, x0:x0+w_size] = 0.0
-
-        # 形态学 (30%): dilate/erode/open/close, kernel=3 (半径1), 敏感类按 op 跳过
+        # 形态学 (30%): dilate/erode 拟真笔粗抖动为主, open/close 罕见笔触缺陷
         morph_mask = torch.rand(batch_size, device=device) < 0.3
         if morph_mask.any():
-            op = random.choice(['dilate', 'erode', 'open', 'close'])
+            op = random.choices(
+                ['dilate', 'erode', 'open', 'close'],
+                weights=[0.4, 0.4, 0.1, 0.1],
+            )[0]
             applicable = morph_mask & ~sensitive_mask(op)
             if applicable.any():
                 sub = batch[applicable]
