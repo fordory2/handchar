@@ -9,8 +9,9 @@ export HANDCHAR_BATCH_SIZE=256       # 4090 24GB, 从 64 提到 256
 export HANDCHAR_NUM_WORKERS=8        # Linux 多进程 dataloader
 export HANDCHAR_LR=0.004             # 随 batch 4x 线性 scale (0.001 -> 0.004)
 
-# 数据集路径 (上传到 /root/autodl-tmp/EnglishImg 后改这里)
-export HANDCHAR_DATA_DIR="/root/autodl-tmp/EnglishImg/English"
+# 数据集路径: 数据应解压到 /root/autodl-tmp/English-Handwritten-Characters-Dataset
+# (含子目录 Img/ 和 english.csv)
+export HANDCHAR_DATA_DIR="/root/autodl-tmp/English-Handwritten-Characters-Dataset"
 
 # ============ 2. 环境检查 ============
 echo "===== 环境检查 ====="
