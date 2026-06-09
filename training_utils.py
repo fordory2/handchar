@@ -1,4 +1,5 @@
 """Shared training and evaluation helpers."""
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -24,6 +25,44 @@ class LabelSmoothing(nn.Module):
             smooth = torch.full_like(log_prob, self.smoothing / (self.num_classes - 1))
             smooth.scatter_(1, targets.unsqueeze(1), self.confidence)
         return (-smooth * log_prob).sum(-1).mean()
+
+
+class ArcFaceCrossEntropy(nn.Module):
+    """ArcFace 损失 (Deng et al. CVPR 2019).
+
+    与 ArcMarginProduct 配套使用: 模型输出 scale*cos(θ), 本损失在训练时为目标类
+    施加 angular margin (cos(θ+m)), 然后过 LabelSmoothing CE.
+    Inference 时模型直接 argmax(scale*cos) 即可, 不需要本损失.
+
+    Mixup/CutMix 兼容: 训练侧用 lam*loss(out, y_a) + (1-lam)*loss(out, y_b) 即可,
+    两次调用都是 hard label 输入, 各自正确施加 margin.
+    """
+    def __init__(self, num_classes, scale=30.0, margin=0.5, smoothing=0.1):
+        super().__init__()
+        self.scale = scale
+        self.margin = margin
+        self.cos_m = math.cos(margin)
+        self.sin_m = math.sin(margin)
+        # cos(θ+m) 在 θ > π - m 时非单调, 论文做法: 切换到线性近似 cos(θ) - sin(π-m)*m
+        self.threshold = math.cos(math.pi - margin)
+        self.mm = math.sin(math.pi - margin) * margin
+        self.smoother = LabelSmoothing(num_classes, smoothing=smoothing)
+
+    def forward(self, predictions, targets):
+        # predictions: [B, C] = scale * cos(θ)
+        cosine = predictions / self.scale
+        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0.0, 1.0))
+        phi = cosine * self.cos_m - sine * self.sin_m  # cos(θ + m)
+        phi = torch.where(cosine > self.threshold, phi, cosine - self.mm)
+        one_hot = torch.zeros_like(cosine).scatter_(1, targets.unsqueeze(1), 1)
+        adjusted = one_hot * phi + (1 - one_hot) * cosine
+        return self.smoother(adjusted * self.scale, targets)
+
+
+def _model_uses_arcface(net):
+    """递归检测模型是否包含 ArcMarginProduct 子模块 (compare.py 包装层后也能查到)."""
+    from models import ArcMarginProduct
+    return any(isinstance(m, ArcMarginProduct) for m in net.modules())
 
 
 def _mixup_or_cutmix(images, labels, mixup_alpha=0.0, cutmix_alpha=0.0, p_cutmix=0.5):
@@ -115,7 +154,11 @@ def evaluate_per_class(net, loader):
 
 def fit_best_model(net, train_loader, validation_loader, epochs, progress_label="",
                    mixup_alpha=0.0, cutmix_alpha=0.0):
-    criterion = LabelSmoothing(NUM_CLASSES)
+    # 自动选择 criterion: 含 ArcMarginProduct 的模型用 ArcFaceCrossEntropy, 否则 LabelSmoothing.
+    if _model_uses_arcface(net):
+        criterion = ArcFaceCrossEntropy(NUM_CLASSES, scale=30.0, margin=0.5, smoothing=0.1)
+    else:
+        criterion = LabelSmoothing(NUM_CLASSES)
     optimizer = AdamW(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
     best_accuracy = 0.0

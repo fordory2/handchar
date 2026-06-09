@@ -120,8 +120,13 @@ def main():
             main_logits, aux_logits, cont_feat, _ = net(images)
             main_loss = focal_crit(main_logits, labels)
             aux_loss = aux_crit(aux_logits, aux_labels)
-            cont_loss = contrastive_loss(cont_feat, labels, pair_table)
-            loss = main_loss + AUX_WEIGHT * aux_loss + CONTRASTIVE_WEIGHT * cont_loss
+            # cont_feat 可能为 None (新模型已移除 contrastive head); 此时跳过对比损失
+            if cont_feat is not None:
+                cont_loss = contrastive_loss(cont_feat, labels, pair_table)
+                loss = main_loss + AUX_WEIGHT * aux_loss + CONTRASTIVE_WEIGHT * cont_loss
+            else:
+                cont_loss = torch.zeros((), device=DEVICE)
+                loss = main_loss + AUX_WEIGHT * aux_loss
             loss.backward()
             optimizer.step()
             total_loss += loss.item()

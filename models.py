@@ -110,6 +110,27 @@ class GRN(nn.Module):
         return self.gamma * (x * nx) + self.beta + x
 
 
+class ArcMarginProduct(nn.Module):
+    """ArcFace cosine head: 返回 scale*cos(θ) logits, 不在 forward 加 margin.
+
+    Deng et al., "ArcFace: Additive Angular Margin Loss for Deep Face Recognition", CVPR 2019.
+
+    设计上不在 model.forward 里加 margin (避免线路里穿 labels),
+    margin 由配套的 ArcFaceCrossEntropy 在训练时施加.
+    Inference: argmax(scale*cos) == argmax(scale*cos+margin), 不影响结果.
+    """
+    def __init__(self, in_features, out_features, scale=30.0):
+        super().__init__()
+        self.scale = scale
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        nn.init.xavier_uniform_(self.weight)
+
+    def forward(self, features):
+        cosine = functional.linear(functional.normalize(features, dim=1),
+                                    functional.normalize(self.weight, dim=1))
+        return cosine * self.scale
+
+
 class CBAMBlock(nn.Module):
     def __init__(self, channels, reduction=8):
         super().__init__()
@@ -474,10 +495,11 @@ class HybridHandCharNet(nn.Module):
     """
     def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True,
                  rnn_cell='lstm', rnn_hidden=128, rnn_layers=2, rnn_proj_dim=256,
-                 use_grn=False):
+                 use_grn=False, use_arcface=False, head_bottleneck=256, arcface_scale=30.0):
         super().__init__()
         self.use_rnn = use_rnn
         self.use_grn = use_grn
+        self.use_arcface = use_arcface
 
         # Stem: 1/4 下采样
         self.stem = nn.Sequential(ConvBlock(1, 32, 7, 2, 3), nn.MaxPool2d(2))
@@ -553,15 +575,31 @@ class HybridHandCharNet(nn.Module):
         unified_dim = 160 + 64 + rnn_dim
         self.unified_dim = unified_dim
 
-        self.head_main = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(unified_dim, 128),
-            nn.ReLU(),
+        # head_main: bottleneck 加宽 128 → head_bottleneck (默认 256), 最后一层可换 ArcFace.
+        if use_arcface:
+            self.head_main = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(unified_dim, head_bottleneck),
+                nn.ReLU(),
+                nn.Dropout(dropout * 0.5),
+                ArcMarginProduct(head_bottleneck, num_classes, scale=arcface_scale),
+            )
+        else:
+            self.head_main = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(unified_dim, head_bottleneck),
+                nn.ReLU(),
+                nn.Dropout(dropout * 0.5),
+                nn.Linear(head_bottleneck, num_classes),
+            )
+        # head_aux: 单线性 → 小 MLP (480 → 64 → 3), 增加非线性表达
+        self.head_aux = nn.Sequential(
+            nn.Linear(unified_dim, 64),
+            nn.GELU(),
             nn.Dropout(dropout * 0.5),
-            nn.Linear(128, num_classes),
+            nn.Linear(64, aux_classes),
         )
-        self.head_aux = nn.Linear(unified_dim, aux_classes)
-        self.head_contrastive = nn.Linear(unified_dim, 128)
+        # contrastive head 删除: 训练流程未启用, 占参数无收益
 
     def encode(self, x):
         """编码到 (feat_coarse, decoder_out), 供 MAE / Proto 复用."""
@@ -616,8 +654,8 @@ class HybridHandCharNet(nn.Module):
         unified = self.unified_feature(x)
         main_logits = self.head_main(unified)
         aux_logits = self.head_aux(unified)
-        cont_feat = functional.normalize(self.head_contrastive(unified), dim=1)
-        return main_logits, aux_logits, cont_feat, unified
+        # contrastive 占位 None: 保持 4 元组接口, 训练侧已不使用
+        return main_logits, aux_logits, None, unified
 
 
 # ====== RefinedHybridNet: UNet 4 级骨架, 4 模块分级配置 ======
@@ -632,7 +670,8 @@ class RefinedHybridNet(nn.Module):
     """
     def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True,
                  base_ch=32, rnn_cell='gru', rnn_hidden=64, rnn_layers=1, rnn_proj_dim=128,
-                 rnn_input_ch=16, rnn_attach_to='dec1', use_grn=False):
+                 rnn_input_ch=16, rnn_attach_to='dec1', use_grn=False,
+                 use_arcface=False, head_bottleneck=256, arcface_scale=30.0):
         """rnn_attach_to: 'bottleneck' | 'dec3' | 'dec2' | 'dec1' — RNN 扫描在哪一级特征图.
 
         默认 'dec1' (全分辨率 W=48), 但参数最多且最易过拟合;
@@ -740,15 +779,31 @@ class RefinedHybridNet(nn.Module):
         unified_dim = c4 + c1 + rnn_dim
         self.unified_dim = unified_dim
 
-        self.head_main = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(unified_dim, 128),
-            nn.ReLU(),
+        self.use_arcface = use_arcface
+        if use_arcface:
+            self.head_main = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(unified_dim, head_bottleneck),
+                nn.ReLU(),
+                nn.Dropout(dropout * 0.5),
+                ArcMarginProduct(head_bottleneck, num_classes, scale=arcface_scale),
+            )
+        else:
+            self.head_main = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(unified_dim, head_bottleneck),
+                nn.ReLU(),
+                nn.Dropout(dropout * 0.5),
+                nn.Linear(head_bottleneck, num_classes),
+            )
+        # head_aux: 单线性 → 小 MLP (unified_dim → 64 → 3)
+        self.head_aux = nn.Sequential(
+            nn.Linear(unified_dim, 64),
+            nn.GELU(),
             nn.Dropout(dropout * 0.5),
-            nn.Linear(128, num_classes),
+            nn.Linear(64, aux_classes),
         )
-        self.head_aux = nn.Linear(unified_dim, aux_classes)
-        self.head_contrastive = nn.Linear(unified_dim, 128)
+        # contrastive head 删除: 训练流程未启用, 占参数无收益
 
     def encode(self, x):
         """编码 + 解码全过, 返回所有中间特征 dict."""
@@ -790,5 +845,4 @@ class RefinedHybridNet(nn.Module):
         unified = self.unified_feature(x)
         main_logits = self.head_main(unified)
         aux_logits = self.head_aux(unified)
-        cont_feat = functional.normalize(self.head_contrastive(unified), dim=1)
-        return main_logits, aux_logits, cont_feat, unified
+        return main_logits, aux_logits, None, unified

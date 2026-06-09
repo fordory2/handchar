@@ -87,6 +87,20 @@ def hybrid_grn_no_rnn_factory(num_classes):
     return _HybridForCompare(num_classes, use_rnn=False, use_grn=True)
 
 
+def hybrid_arc_factory(num_classes):
+    """Hybrid + Full BiLSTM + ArcFace head. 治混淆对 (1/l, 0/O/o, 5/S/s)."""
+    return _HybridForCompare(num_classes, use_rnn=True,
+                              rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                              rnn_proj_dim=256, use_arcface=True)
+
+
+def hybrid_grn_arc_factory(num_classes):
+    """Hybrid + GRN + ArcFace. 全套升级头."""
+    return _HybridForCompare(num_classes, use_rnn=True,
+                              rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                              rnn_proj_dim=256, use_grn=True, use_arcface=True)
+
+
 class _RefinedHybridForCompare(nn.Module):
     """RefinedHybridNet 包成单输出的 model_factory(num_classes) 接口."""
     def __init__(self, num_classes=NUM_CLASSES, **kwargs):
@@ -140,6 +154,22 @@ def refined_grn_tiny_factory(num_classes):
 def refined_grn_no_rnn_factory(num_classes):
     """RefinedHybrid (no RNN) + GRN. 阶段 2 候选."""
     return _RefinedHybridForCompare(num_classes, use_rnn=False, use_grn=True)
+
+
+def refined_arc_factory(num_classes):
+    """Refined + Full BiLSTM (bottleneck) + ArcFace."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                                     rnn_proj_dim=256, rnn_attach_to='bottleneck',
+                                     use_arcface=True)
+
+
+def refined_grn_arc_factory(num_classes):
+    """Refined + GRN + ArcFace."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                                     rnn_proj_dim=256, rnn_attach_to='bottleneck',
+                                     use_grn=True, use_arcface=True)
 
 
 # RNN 挂载点消融: TinyGRU 在 bottleneck / dec3 / dec2 / dec1 4 个位置
@@ -206,6 +236,8 @@ def main():
                             help="对比 Hybrid+RNN / Hybrid-RNN 与 baseline Full+SE")
         parser.add_argument("--hybrid-grn", dest="hybrid_grn", action="store_true",
                             help="对比 Hybrid+RNN baseline 与 Hybrid+GRN 3 变体")
+        parser.add_argument("--arc", action="store_true",
+                            help="对比 Hybrid+RNN baseline 与 4 个 ArcFace 变体 (Hybrid/Refined × ±GRN)")
         parser.add_argument("--refined", action="store_true",
                             help="对比 RefinedHybrid 4 个变体 (UNet 4 级骨架)")
         parser.add_argument("--attach", action="store_true",
@@ -247,6 +279,10 @@ def main():
         (hybrid_grn_full_factory, "Hybrid+GRN+RNN"),
         (hybrid_grn_tiny_factory, "Hybrid+GRN+TinyGRU"),
         (hybrid_grn_no_rnn_factory, "Hybrid+GRN-RNN"),
+        (hybrid_arc_factory, "Hybrid+ArcFace"),
+        (hybrid_grn_arc_factory, "Hybrid+GRN+ArcFace"),
+        (refined_arc_factory, "Refined+ArcFace"),
+        (refined_grn_arc_factory, "Refined+GRN+ArcFace"),
         (refined_full_factory, "Refined+RNN"),
         (refined_no_rnn_factory, "Refined-RNN"),
         (refined_tiny_factory, "Refined+TinyGRU"),
@@ -269,10 +305,12 @@ def main():
         selected |= {1, 6, 18, 19, 20, 21}  # Full+SE + NoDir+ECA + Hybrid 4 版 (RNN/无RNN/TinyGRU/Trans)
     if args.hybrid_grn:
         selected |= {18, 22, 23, 24}  # Hybrid+RNN baseline + Hybrid GRN 3 版 (RNN/TinyGRU/无RNN)
+    if args.arc:
+        selected |= {18, 25, 26, 27, 28}  # Hybrid+RNN baseline + 4 个 ArcFace 变体
     if args.refined:
-        selected |= {18, 25, 26, 27, 28}  # Hybrid+RNN (50ep 冠军) + Refined 4 版
+        selected |= {18, 29, 30, 31, 32}  # Hybrid+RNN (50ep 冠军) + Refined 4 版
     if args.attach:
-        selected |= {27, 29, 30, 31}  # TinyGRU @ dec1/bottleneck/dec3/dec2 挂载点消融
+        selected |= {31, 33, 34, 35}  # TinyGRU @ dec1/bottleneck/dec3/dec2 挂载点消融
     if not selected:
         selected = set(range(len(all_models)))
     models = [all_models[i] for i in sorted(selected)]
