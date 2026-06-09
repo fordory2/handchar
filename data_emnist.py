@@ -21,9 +21,16 @@ from torchvision.datasets import EMNIST
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data_utils import DATA_DIR, RESAMPLE_FILTER, load_split_data
 
-# torchvision 默认存放路径; 4090 上建议 export HANDCHAR_TORCH_DATA=/root/autodl-tmp/torch_data
-TORCH_DATA_ROOT = os.environ.get("HANDCHAR_TORCH_DATA",
-                                  os.path.join(os.path.dirname(os.path.abspath(__file__)), "torch_data"))
+# torchvision 数据缓存根: 环境变量 > AutoDL 数据盘 > 项目本地
+def _resolve_torch_data_root():
+    env = os.environ.get("HANDCHAR_TORCH_DATA")
+    if env:
+        return env
+    if os.path.isdir("/root/autodl-tmp"):
+        return "/root/autodl-tmp/torch_data"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "torch_data")
+
+TORCH_DATA_ROOT = _resolve_torch_data_root()
 
 
 def fix_emnist_orientation(pil_img):

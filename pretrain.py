@@ -27,7 +27,17 @@ from project_constants import (
 
 MASK_RATIO = 0.75  # 遮 75% (MAE 论文标准, 30% 太简单退化为邻域插值)
 PATCH_SIZE = 4     # patch 大小
-DEFAULT_POOL = "/root/autodl-tmp/pretrain_pool.pt"
+def _resolve_default_pool():
+    """优先级: 环境变量 > AutoDL 数据盘 > 项目本地 output/."""
+    env = os.environ.get("HANDCHAR_POOL_PATH")
+    if env:
+        return env
+    if os.path.isdir("/root/autodl-tmp"):
+        return "/root/autodl-tmp/pretrain_pool.pt"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "output", "pretrain_pool.pt")
+
+DEFAULT_POOL = _resolve_default_pool()
 
 
 class LightDecoder(nn.Module):

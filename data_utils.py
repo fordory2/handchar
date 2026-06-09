@@ -11,11 +11,23 @@ from torch.utils.data import DataLoader, Dataset
 
 from project_constants import NUM_WORKERS, PIN_MEMORY
 
-DATA_DIR = os.environ.get(
-    "HANDCHAR_DATA_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 "English-Handwritten-Characters-Dataset"),
-)
+def _resolve_data_dir():
+    """优先级: 环境变量 > AutoDL 标准路径 > 项目本地路径."""
+    env = os.environ.get("HANDCHAR_DATA_DIR")
+    if env and os.path.exists(os.path.join(env, "english.csv")):
+        return env
+    candidates = [
+        "/root/autodl-tmp/English-Handwritten-Characters-Dataset",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "English-Handwritten-Characters-Dataset"),
+    ]
+    for path in candidates:
+        if os.path.exists(os.path.join(path, "english.csv")):
+            return path
+    return candidates[-1]  # 兜底: 报错时路径信息最有用
+
+
+DATA_DIR = _resolve_data_dir()
 RESAMPLE_FILTER = Image.Resampling.LANCZOS
 
 # 模块级 tensor 缓存: file_name -> [1, H, W] float tensor.
