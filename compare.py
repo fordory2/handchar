@@ -37,9 +37,9 @@ from training_utils import compute_pair_accuracy, evaluate, evaluate_per_class, 
 
 class _HybridForCompare(nn.Module):
     """把 HybridHandCharNet 包成单输出的 model_factory(num_classes) 接口."""
-    def __init__(self, num_classes=NUM_CLASSES, use_rnn=True):
+    def __init__(self, num_classes=NUM_CLASSES, **kwargs):
         super().__init__()
-        self.hybrid = HybridHandCharNet(num_classes=num_classes, use_rnn=use_rnn)
+        self.hybrid = HybridHandCharNet(num_classes=num_classes, **kwargs)
 
     def forward(self, x):
         return self.hybrid(x)[0]
@@ -51,6 +51,20 @@ def hybrid_full_factory(num_classes):
 
 def hybrid_no_rnn_factory(num_classes):
     return _HybridForCompare(num_classes, use_rnn=False)
+
+
+def hybrid_tiny_rnn_factory(num_classes):
+    """轻量 BiGRU 版本: 减重抗过拟合, 保留 RNN 笔顺特征."""
+    return _HybridForCompare(num_classes, use_rnn=True,
+                              rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                              rnn_proj_dim=128)
+
+
+def hybrid_transformer_factory(num_classes):
+    """TransformerEncoder 替代 RNN: 自注意力建模笔顺位置间长依赖."""
+    return _HybridForCompare(num_classes, use_rnn=True,
+                              rnn_cell='transformer', rnn_layers=1,
+                              rnn_proj_dim=128)
 
 
 def stratified_k_fold(labels, n_splits=5, seed=42):
@@ -124,6 +138,8 @@ def main():
         (ConvNeXtV2Char, "ConvNeXtV2"), (MobileNetV4Char, "MobileNetV4"),
         (hybrid_full_factory, "Hybrid+RNN"),
         (hybrid_no_rnn_factory, "Hybrid-RNN"),
+        (hybrid_tiny_rnn_factory, "Hybrid+TinyGRU"),
+        (hybrid_transformer_factory, "Hybrid+Trans"),
     ]
 
     selected = set()
@@ -136,7 +152,7 @@ def main():
     if args.sota:
         selected |= {14, 15, 16, 17}
     if args.hybrid:
-        selected |= {1, 6, 18, 19}  # Full+SE 基线 + NoDir+ECA 昨天冠军 + Hybrid 两版
+        selected |= {1, 6, 18, 19, 20}  # Full+SE 基线 + NoDir+ECA + Hybrid 三版 (RNN/无RNN/TinyGRU)
     if not selected:
         selected = set(range(len(all_models)))
     models = [all_models[i] for i in sorted(selected)]

@@ -456,7 +456,8 @@ class HybridHandCharNet(nn.Module):
     输入: [B, 1, 64, 48] (H=64, W=48)
     输出: (main_logits[B,62], aux_logits[B,3], cont_feat[B,128], unified_feat)
     """
-    def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True):
+    def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True,
+                 rnn_cell='lstm', rnn_hidden=128, rnn_layers=2, rnn_proj_dim=256):
         super().__init__()
         self.use_rnn = use_rnn
 
@@ -491,12 +492,29 @@ class HybridHandCharNet(nn.Module):
         self.up2 = nn.ConvTranspose2d(128, 64, 2, 2)                # → [B,64,16,12]
         self.fuse2 = ConvBlock(64 + 64, 64, 1, 1, 0)                # concat feat_fine (64ch)
 
-        # 可选 BiLSTM (沿宽度扫笔顺): decoder_out [B,64,16,12], W=12 步, 每步 64*16=1024 维
+        # 可选序列建模: decoder_out [B,64,16,12] → W=12 步, 每步 64*16=1024 维
+        # rnn_cell: 'lstm' | 'gru' | 'transformer'
+        self.rnn_cell = rnn_cell.lower() if use_rnn else None
         if use_rnn:
-            self.lstm_proj = nn.Linear(64 * 16, 256)
-            self.lstm = nn.LSTM(256, 128, num_layers=2, batch_first=False,
-                                bidirectional=True, dropout=dropout)
-            rnn_dim = 256
+            self.lstm_proj = nn.Linear(64 * 16, rnn_proj_dim)
+            if self.rnn_cell == 'transformer':
+                # 可学习位置编码 (W=12 固定)
+                self.pos_encoding = nn.Parameter(torch.zeros(12, 1, rnn_proj_dim))
+                nn.init.normal_(self.pos_encoding, std=0.02)
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=rnn_proj_dim, nhead=4,
+                    dim_feedforward=rnn_proj_dim * 2,
+                    dropout=dropout, batch_first=False,
+                )
+                self.lstm = nn.TransformerEncoder(encoder_layer, num_layers=rnn_layers)
+                rnn_dim = rnn_proj_dim  # 不双向
+            else:
+                rnn_cls = nn.GRU if self.rnn_cell == 'gru' else nn.LSTM
+                self.lstm = rnn_cls(rnn_proj_dim, rnn_hidden, num_layers=rnn_layers,
+                                    batch_first=False, bidirectional=True,
+                                    dropout=dropout if rnn_layers > 1 else 0.0)
+                rnn_dim = rnn_hidden * 2  # 双向
+            self.rnn_dropout = nn.Dropout(dropout * 2)  # 抑制序列模块过拟合
         else:
             rnn_dim = 0
 
@@ -544,8 +562,16 @@ class HybridHandCharNet(nn.Module):
             b, c, h, w = decoder_out.shape
             seq = decoder_out.permute(3, 0, 1, 2).reshape(w, b, c * h)
             seq = self.lstm_proj(seq)
-            _, (hidden, _) = self.lstm(seq)
-            rnn_feat = torch.cat([hidden[-2], hidden[-1]], dim=1)
+            if self.rnn_cell == 'transformer':
+                seq = seq + self.pos_encoding[:seq.size(0)]
+                out = self.lstm(seq)         # [W, B, d]
+                rnn_feat = out.mean(dim=0)   # 序列均值池化
+            else:
+                rnn_out = self.lstm(seq)
+                # LSTM 返回 (out, (h, c)); GRU 返回 (out, h)
+                hidden = rnn_out[1][0] if isinstance(rnn_out[1], tuple) else rnn_out[1]
+                rnn_feat = torch.cat([hidden[-2], hidden[-1]], dim=1)
+            rnn_feat = self.rnn_dropout(rnn_feat)
             return torch.cat([coarse_pooled, fine_pooled, rnn_feat], dim=1)
         return torch.cat([coarse_pooled, fine_pooled], dim=1)
 
