@@ -41,8 +41,19 @@ def main():
     parser.add_argument("--epochs", type=int, default=TRAIN_EPOCHS)
     parser.add_argument("--pretrained", type=str, default="",
                         help="MAE 预训练编码器路径 (output/pretrain_encoder.pth), 空=从头训")
-    parser.add_argument("--no_rnn", action="store_true", help="禁用 BiLSTM 分支")
+    parser.add_argument("--no_rnn", action="store_true", help="禁用 RNN 分支")
+    parser.add_argument("--rnn_cell", type=str, default="lstm", choices=["lstm", "gru", "transformer"])
+    parser.add_argument("--rnn_hidden", type=int, default=128)
+    parser.add_argument("--rnn_layers", type=int, default=2)
+    parser.add_argument("--rnn_proj_dim", type=int, default=256)
+    parser.add_argument("--tiny_gru", action="store_true",
+                        help="预设: TinyGRU (cell=gru, hidden=64, layers=1, proj=128)")
     args = parser.parse_args()
+    if args.tiny_gru:
+        args.rnn_cell = "gru"
+        args.rnn_hidden = 64
+        args.rnn_layers = 1
+        args.rnn_proj_dim = 128
 
     os.makedirs("output", exist_ok=True)
     train_data, _, test_data, _, l2i = load_split_data()
@@ -68,11 +79,19 @@ def main():
                               collate_fn=collate_with_augment, num_workers=0)
     test_loader = DataLoader(test_ds, BATCH_SIZE, shuffle=False, num_workers=0)
 
-    net = HybridHandCharNet(num_classes=NUM_CLASSES, aux_classes=AUX_CLASSES,
-                            use_rnn=not args.no_rnn).to(DEVICE)
+    net = HybridHandCharNet(
+        num_classes=NUM_CLASSES, aux_classes=AUX_CLASSES,
+        use_rnn=not args.no_rnn,
+        rnn_cell=args.rnn_cell,
+        rnn_hidden=args.rnn_hidden,
+        rnn_layers=args.rnn_layers,
+        rnn_proj_dim=args.rnn_proj_dim,
+    ).to(DEVICE)
     n_params = sum(p.numel() for p in net.parameters())
+    rnn_desc = "off" if args.no_rnn else "%s/h%d/L%d/d%d" % (
+        args.rnn_cell, args.rnn_hidden, args.rnn_layers, args.rnn_proj_dim)
     print("HybridHandCharNet | Params: %d | Epochs: %d | RNN: %s" %
-          (n_params, args.epochs, "off" if args.no_rnn else "on"))
+          (n_params, args.epochs, rnn_desc))
 
     if args.pretrained:
         encoder_state = torch.load(args.pretrained, map_location=DEVICE)

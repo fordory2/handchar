@@ -75,7 +75,19 @@ def main():
     parser.add_argument("--epochs", type=int, default=META_EPOCHS)
     parser.add_argument("--init", type=str, required=True,
                         help="预训练的 HybridHandCharNet 权重 (output/hybrid_*.pth)")
+    parser.add_argument("--rnn_cell", type=str, default="lstm",
+                        choices=["lstm", "gru", "transformer"])
+    parser.add_argument("--rnn_hidden", type=int, default=128)
+    parser.add_argument("--rnn_layers", type=int, default=2)
+    parser.add_argument("--rnn_proj_dim", type=int, default=256)
+    parser.add_argument("--tiny_gru", action="store_true")
+    parser.add_argument("--no_rnn", action="store_true")
     args = parser.parse_args()
+    if args.tiny_gru:
+        args.rnn_cell = "gru"
+        args.rnn_hidden = 64
+        args.rnn_layers = 1
+        args.rnn_proj_dim = 128
 
     os.makedirs("output", exist_ok=True)
     train_data, _, test_data, _, l2i = load_split_data()
@@ -85,7 +97,12 @@ def main():
     test_ds = CharDataset(test_data, train=False)
     class_pool = build_class_pool(train_data)
 
-    net = HybridHandCharNet(num_classes=NUM_CLASSES, aux_classes=AUX_CLASSES).to(DEVICE)
+    net = HybridHandCharNet(
+        num_classes=NUM_CLASSES, aux_classes=AUX_CLASSES,
+        use_rnn=not args.no_rnn,
+        rnn_cell=args.rnn_cell, rnn_hidden=args.rnn_hidden,
+        rnn_layers=args.rnn_layers, rnn_proj_dim=args.rnn_proj_dim,
+    ).to(DEVICE)
     net.load_state_dict(torch.load(args.init, map_location=DEVICE))
     print("Loaded:", args.init)
 
