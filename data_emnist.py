@@ -96,6 +96,10 @@ def collect_emnist_tensors(max_samples=None, dedup_against=None, dedup_threshold
 
     tensors = []
     n_dropped = 0
+    if verbose:
+        print(f"[EMNIST] 开始遍历 + 转 tensor"
+              f"{' + phash 去重' if dedup_against is not None else ''}...")
+    log_step = max(1000, max_samples // 50)  # 至少打 ~50 次进度
     for i in range(max_samples):
         pil, _ = ds[i]  # ds[i] 返回 (PIL Image L mode, label)
         t = emnist_to_tensor(pil)
@@ -105,8 +109,11 @@ def collect_emnist_tensors(max_samples=None, dedup_against=None, dedup_threshold
                 n_dropped += 1
                 continue
         tensors.append(t)
-        if verbose and (i + 1) % 50000 == 0:
-            print(f"[EMNIST] 进度 {i + 1}/{max_samples}, 已剔除 {n_dropped}")
+        if verbose and (i + 1) % log_step == 0:
+            print(f"\r[EMNIST] 进度 {i + 1}/{max_samples}, 保留 {len(tensors)}, "
+                  f"剔除 {n_dropped}", end="", flush=True)
+    if verbose:
+        print()
     if verbose:
         print(f"[EMNIST] 完成. 保留 {len(tensors)}, 剔除 {n_dropped} (phash<{dedup_threshold})")
     return torch.stack(tensors)

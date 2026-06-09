@@ -18,6 +18,24 @@ DATA_DIR = os.environ.get(
 )
 RESAMPLE_FILTER = Image.Resampling.LANCZOS
 
+# 模块级 tensor 缓存: file_name -> [1, H, W] float tensor.
+# 课设全集只有 3410 张 64×48 灰度图 (~40MB), 一次解码后永久驻留, 后续 fold/模型
+# 切换时 CharDataset() 构造直接命中, 不再重跑 LANCZOS resize.
+_IMAGE_CACHE = {}
+
+
+def _load_image_tensor(file_name, size):
+    key = (file_name, size)
+    cached = _IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    img = Image.open(f'{DATA_DIR}/Img/{file_name}').convert('L')
+    img = img.resize(size, RESAMPLE_FILTER)
+    arr = 1.0 - np.array(img, dtype=np.float32) / 255.0
+    tensor = torch.from_numpy(arr).unsqueeze(0)
+    _IMAGE_CACHE[key] = tensor
+    return tensor
+
 
 def load_split_data():
     """按课程设计划分: 001-045 train, 046-050 val, 051-055 test"""
@@ -84,13 +102,9 @@ class CharDataset(Dataset):
         self.size = size
         self.train = train
         self.labels = [label for _, label in data]
-        # 全量预加载: 数据集仅 3410 张 64×48 灰度图 (~40MB), 一次读完零等待
-        self.images = []
-        for idx, (file_name, _) in enumerate(data):
-            img = Image.open(f'{DATA_DIR}/Img/{file_name}').convert('L')
-            img = img.resize(self.size, RESAMPLE_FILTER)
-            arr = 1.0 - np.array(img, dtype=np.float32) / 255.0
-            self.images.append(torch.from_numpy(arr).unsqueeze(0))
+        # 全量预加载: 命中模块级 _IMAGE_CACHE 时零开销, 否则解码一次后留存
+        self.images = [_load_image_tensor(file_name, self.size)
+                       for file_name, _ in data]
 
     def __len__(self):
         return len(self.labels)
