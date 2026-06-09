@@ -23,6 +23,22 @@ RESAMPLE_FILTER = Image.Resampling.LANCZOS
 # 切换时 CharDataset() 构造直接命中, 不再重跑 LANCZOS resize.
 _IMAGE_CACHE = {}
 
+# 敏感字符集合: 对特定增强易"变成另一类"的字符, 跳过对应增强
+SENSITIVE_CHARS = {
+    'rotate':    'bdpq69MWNZun',  # 旋转易混
+    'erode':     'il1j.',         # 细笔画, 腐蚀后近空白
+    'dilate':    'Oo0',           # 内孔被填实
+    'close':     'cu',            # 开口被封 -> o
+    'open':      'eB',            # 闭合环被打开
+    'erase_big': 'il1.',          # 单笔画, 大遮罩直接消失
+}
+_SENSITIVE_IDX = {k: set() for k in SENSITIVE_CHARS}
+
+
+def _register_sensitive(l2i):
+    for group, chars in SENSITIVE_CHARS.items():
+        _SENSITIVE_IDX[group] = {l2i[c] for c in chars if c in l2i}
+
 
 def _load_image_tensor(file_name, size):
     key = (file_name, size)
@@ -52,23 +68,34 @@ def load_split_data():
             train_d.append((file_name, idx))  # 001-050 CV pool
         else:
             test_d.append((file_name, idx))   # 051-055 holdout
+    _register_sensitive(l2i)
     return train_d, val_d, test_d, all_labels, l2i
 
 
 class Augment:
-    """批量 tensor 增强: B 张图一次过"""
+    """批量 tensor 增强: B 张图一次过. 按类掩码避免敏感类被增强变成另一类."""
     @staticmethod
-    def apply_batch(batch):
-        """batch: [B, 1, H, W] -> [B, 1, H, W]"""
+    def apply_batch(batch, labels):
+        """batch: [B, 1, H, W], labels: [B] long -> [B, 1, H, W]"""
         batch_size, channels, height, width = batch.shape
         device = batch.device
-        # 每张图独立的变换参数
-        angles = torch.empty(batch_size, device=device).uniform_(-10, 10) * 3.14159 / 180
+
+        def sensitive_mask(group):
+            idx_set = _SENSITIVE_IDX[group]
+            if not idx_set:
+                return torch.zeros(batch_size, dtype=torch.bool, device=device)
+            return torch.tensor(
+                [int(l.item()) in idx_set for l in labels],
+                dtype=torch.bool, device=device,
+            )
+
+        # 仿射: 角度 ±7° (旋转敏感类清零角度, 位移/缩放保留)
+        angles = torch.empty(batch_size, device=device).uniform_(-7, 7) * 3.14159 / 180
+        angles = angles.masked_fill(sensitive_mask('rotate'), 0.0)
         cos_a, sin_a = angles.cos(), angles.sin()
         dx = torch.empty(batch_size, device=device).uniform_(-4, 4) / width * 2
         dy = torch.empty(batch_size, device=device).uniform_(-4, 4) / height * 2
         scale = torch.empty(batch_size, device=device).uniform_(0.9, 1.1)
-        # 构建 [B, 2, 3] 仿射矩阵
         theta = torch.zeros(batch_size, 2, 3, device=device)
         theta[:, 0, 0] = scale * cos_a
         theta[:, 0, 1] = -sin_a
@@ -79,21 +106,44 @@ class Augment:
         grid = functional.affine_grid(theta, batch.shape, align_corners=False)
         batch = functional.grid_sample(batch, grid, mode='bilinear',
                                        padding_mode='border', align_corners=False)
-        # 高斯噪声 (一半图片)
-        mask = torch.rand(batch_size, device=device) > 0.5
-        if mask.any():
-            noise = torch.randn_like(batch[mask]) * 0.03
-            batch[mask] = torch.clamp(batch[mask] + noise, 0.0, 1.0)
-        # 随机矩形遮罩 (30%图片, 模拟笔画缺失)
+
+        # 高斯噪声 (50%, 全类别)
+        noise_mask = torch.rand(batch_size, device=device) > 0.5
+        if noise_mask.any():
+            noise = torch.randn_like(batch[noise_mask]) * 0.03
+            batch[noise_mask] = torch.clamp(batch[noise_mask] + noise, 0.0, 1.0)
+
+        # 矩形擦除 (30%): 敏感单笔画类上限 10%, 其它上限 20%
         erase_mask = torch.rand(batch_size, device=device) < 0.3
         if erase_mask.any():
+            big_sens = sensitive_mask('erase_big')
             indices = erase_mask.nonzero(as_tuple=True)[0]
             for idx in indices:
-                h_size = int(height * random.uniform(0.1, 0.3))
-                w_size = int(width * random.uniform(0.1, 0.3))
+                cap = 0.10 if bool(big_sens[idx]) else 0.20
+                h_size = int(height * random.uniform(0.05, cap))
+                w_size = int(width * random.uniform(0.05, cap))
                 y0 = random.randint(0, height - h_size)
                 x0 = random.randint(0, width - w_size)
                 batch[idx, :, y0:y0+h_size, x0:x0+w_size] = 0.0
+
+        # 形态学 (30%): dilate/erode/open/close, kernel=3 (半径1), 敏感类按 op 跳过
+        morph_mask = torch.rand(batch_size, device=device) < 0.3
+        if morph_mask.any():
+            op = random.choice(['dilate', 'erode', 'open', 'close'])
+            applicable = morph_mask & ~sensitive_mask(op)
+            if applicable.any():
+                sub = batch[applicable]
+                if op == 'dilate':
+                    sub = functional.max_pool2d(sub, 3, 1, 1)
+                elif op == 'erode':
+                    sub = -functional.max_pool2d(-sub, 3, 1, 1)
+                elif op == 'close':
+                    sub = functional.max_pool2d(sub, 3, 1, 1)
+                    sub = -functional.max_pool2d(-sub, 3, 1, 1)
+                else:  # open
+                    sub = -functional.max_pool2d(-sub, 3, 1, 1)
+                    sub = functional.max_pool2d(sub, 3, 1, 1)
+                batch[applicable] = sub
         return batch
 
 
@@ -118,7 +168,7 @@ def collate_with_augment(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)  # [B, 1, H, W]
     labels = torch.tensor(labels)
-    images = Augment.apply_batch(images)
+    images = Augment.apply_batch(images, labels)
     return images, labels
 
 
