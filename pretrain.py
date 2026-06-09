@@ -1,4 +1,11 @@
-"""自监督预训练: 遮罩重建 → 学通用笔画表示 (使用 HybridHandCharNet 编码器)."""
+"""自监督预训练: 遮罩重建 → 学通用笔画表示 (使用 HybridHandCharNet 编码器).
+
+数据源:
+- 默认 --pool_path /root/autodl-tmp/pretrain_pool.pt: data_emnist.build_pretrain_pool()
+  产出的 70 万张 (课设 train + EMNIST byclass 去重) tensor.
+- 若文件不存在, fallback 到课设 3410 张全量.
+"""
+import argparse
 import datetime
 import os
 import sys
@@ -10,14 +17,17 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from data_emnist import UnlabeledImageDataset
 from data_utils import CharDataset, load_split_data
 from models import HybridHandCharNet
 from project_constants import (
-    BATCH_SIZE, DEVICE, LEARNING_RATE, NUM_CLASSES, PRETRAIN_EPOCHS,
+    BATCH_SIZE, DEVICE, LEARNING_RATE, NUM_CLASSES, NUM_WORKERS, PIN_MEMORY,
+    PRETRAIN_EPOCHS,
 )
 
 MASK_RATIO = 0.3   # 遮 30% 的 patch
 PATCH_SIZE = 4     # patch 大小
+DEFAULT_POOL = "/root/autodl-tmp/pretrain_pool.pt"
 
 
 class LightDecoder(nn.Module):
@@ -50,11 +60,31 @@ def random_mask(images, ratio=0.3, patch_size=4):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epochs", type=int, default=PRETRAIN_EPOCHS)
+    parser.add_argument("--batch", type=int, default=BATCH_SIZE)
+    parser.add_argument("--pool_path", type=str, default=DEFAULT_POOL,
+                        help="预训练池 tensor 路径 (data_emnist 产出); 不存在则用课设全量")
+    parser.add_argument("--num_workers", type=int, default=NUM_WORKERS)
+    args = parser.parse_args()
+
     os.makedirs("output", exist_ok=True)
-    train_data, _, test_data, _, _ = load_split_data()
-    all_images = train_data + test_data  # 不涉及标签, 全量用
-    dataset = CharDataset(all_images, train=False)
-    loader = DataLoader(dataset, BATCH_SIZE, shuffle=True, num_workers=0)
+
+    if os.path.exists(args.pool_path):
+        print("Loading pool: %s" % args.pool_path)
+        images = torch.load(args.pool_path, map_location='cpu')
+        dataset = UnlabeledImageDataset(images)
+        source = "pool(%s, N=%d)" % (os.path.basename(args.pool_path), len(images))
+    else:
+        print("Pool not found, fallback to course 3410: %s" % args.pool_path)
+        train_data, _, test_data, _, _ = load_split_data()
+        dataset = CharDataset(train_data + test_data, train=False)
+        source = "course(N=%d)" % len(dataset)
+
+    use_workers = args.num_workers > 0
+    loader = DataLoader(dataset, args.batch, shuffle=True,
+                        num_workers=args.num_workers, pin_memory=PIN_MEMORY,
+                        persistent_workers=use_workers)
 
     # 用 HybridHandCharNet 当编码器 (只用 encode); RNN 关闭以加快 MAE
     encoder = HybridHandCharNet(num_classes=NUM_CLASSES, use_rnn=False).to(DEVICE)
@@ -62,11 +92,12 @@ def main():
     criterion = nn.MSELoss()
     optimizer = AdamW(list(encoder.parameters()) + list(decoder.parameters()),
                       lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = CosineAnnealingLR(optimizer, T_max=PRETRAIN_EPOCHS)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
-    print("MAE Pretrain | encoder=Hybrid(no_rnn) | epochs=%d" % PRETRAIN_EPOCHS)
+    print("MAE Pretrain | encoder=Hybrid(no_rnn) | source=%s | epochs=%d | batch=%d" %
+          (source, args.epochs, args.batch))
 
-    for epoch in range(PRETRAIN_EPOCHS):
+    for epoch in range(args.epochs):
         encoder.train()
         decoder.train()
         total_loss = 0.0
@@ -84,9 +115,8 @@ def main():
             optimizer.step()
             total_loss += loss.item()
         scheduler.step()
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print("Ep%3d/%d: loss=%.4f" %
-                  (epoch + 1, PRETRAIN_EPOCHS, total_loss / len(loader)))
+        print("Ep%3d/%d: loss=%.4f" %
+              (epoch + 1, args.epochs, total_loss / len(loader)))
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = "output/pretrain_encoder_%s.pth" % timestamp
