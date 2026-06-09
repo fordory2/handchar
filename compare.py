@@ -5,6 +5,7 @@ import os
 from collections import defaultdict
 
 import numpy as np
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from cli_utils import parse_training_args
@@ -25,12 +26,31 @@ from models import (
     HandCharNetNoMultiScale,
     HandCharNetNoSe,
     HandCharNetResGELU,
+    HybridHandCharNet,
     ConvNeXtV2Char,
     MobileNetV4Char,
     ResNet18Char,
 )
 from project_constants import BATCH_SIZE, CONFUSABLE_PAIRS, DEVICE, NUM_CLASSES
 from training_utils import compute_pair_accuracy, evaluate, evaluate_per_class, fit_best_model
+
+
+class _HybridForCompare(nn.Module):
+    """把 HybridHandCharNet 包成单输出的 model_factory(num_classes) 接口."""
+    def __init__(self, num_classes=NUM_CLASSES, use_rnn=True):
+        super().__init__()
+        self.hybrid = HybridHandCharNet(num_classes=num_classes, use_rnn=use_rnn)
+
+    def forward(self, x):
+        return self.hybrid(x)[0]
+
+
+def hybrid_full_factory(num_classes):
+    return _HybridForCompare(num_classes, use_rnn=True)
+
+
+def hybrid_no_rnn_factory(num_classes):
+    return _HybridForCompare(num_classes, use_rnn=False)
 
 
 def stratified_k_fold(labels, n_splits=5, seed=42):
@@ -70,6 +90,8 @@ def main():
         parser.add_argument("--attention", action="store_true")
         parser.add_argument("--ablation", action="store_true")
         parser.add_argument("--sota", action="store_true")
+        parser.add_argument("--hybrid", action="store_true",
+                            help="对比 Hybrid+RNN / Hybrid-RNN 与 baseline Full+SE")
         parser.add_argument("--models", type=str, default="")
         parser.add_argument("--pairs", action="store_true")
         parser.add_argument("--folds", type=str, default="all")
@@ -100,6 +122,8 @@ def main():
         (HandCharNetNoSe, "-SE"), (HandCharNetNoMultiScale, "-MultiScale"),
         (ResNet18Char, "ResNet18"), (DenseNetChar, "DenseNet121"),
         (ConvNeXtV2Char, "ConvNeXtV2"), (MobileNetV4Char, "MobileNetV4"),
+        (hybrid_full_factory, "Hybrid+RNN"),
+        (hybrid_no_rnn_factory, "Hybrid-RNN"),
     ]
 
     selected = set()
@@ -111,6 +135,8 @@ def main():
         selected |= {1, 10, 11, 12, 13}
     if args.sota:
         selected |= {14, 15, 16, 17}
+    if args.hybrid:
+        selected |= {1, 6, 18, 19}  # Full+SE 基线 + NoDir+ECA 昨天冠军 + Hybrid 两版
     if not selected:
         selected = set(range(len(all_models)))
     models = [all_models[i] for i in sorted(selected)]

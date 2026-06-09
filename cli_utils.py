@@ -6,13 +6,15 @@ import random
 import numpy as np
 import torch
 
+from project_constants import TRAIN_EPOCHS
+
 
 def make_parser():
     return argparse.ArgumentParser()
 
 
 def add_training_arguments(parser):
-    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--epochs", type=int, default=TRAIN_EPOCHS)
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
