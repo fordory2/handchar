@@ -107,6 +107,8 @@ def main():
     optimizer = AdamW(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
+    best_test_acc = 0.0
+    best_state = {key: value.cpu().clone() for key, value in net.state_dict().items()}
     for epoch in range(args.epochs):
         net.train()
         total_loss = total_main = total_aux = total_cont = 0.0
@@ -141,14 +143,19 @@ def main():
                 test_total += labels.size(0)
         test_acc = test_correct / test_total
         train_acc = correct / total
+        if test_acc > best_test_acc:
+            best_test_acc = test_acc
+            best_state = {key: value.cpu().clone() for key, value in net.state_dict().items()}
         n_batches = len(train_loader)
         done = epoch + 1
         bar = "#" * (done * 20 // args.epochs) + "-" * (20 - done * 20 // args.epochs)
-        print("\r  Ep%2d/%d [%s] main=%.3f aux=%.3f cnt=%.3f train=%.3f test=%.4f" %
+        print("\r  Ep%2d/%d [%s] main=%.3f aux=%.3f cnt=%.3f train=%.3f test=%.4f best=%.4f" %
               (done, args.epochs, bar, total_main / n_batches,
-               total_aux / n_batches, total_cont / n_batches, train_acc, test_acc),
+               total_aux / n_batches, total_cont / n_batches, train_acc, test_acc, best_test_acc),
               end="", flush=True)
     print()
+
+    net.load_state_dict(best_state)
 
     # 混淆对评估 (复用 training_utils, 包装取主头)
     class _MainHeadWrapper(nn.Module):
@@ -167,7 +174,7 @@ def main():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = "output/hybrid_%s.pth" % timestamp
     torch.save(net.state_dict(), save_path)
-    print("Saved:", save_path)
+    print("Saved best (test=%.4f): %s" % (best_test_acc, save_path))
 
 
 if __name__ == "__main__":

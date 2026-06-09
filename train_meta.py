@@ -112,6 +112,8 @@ def main():
     print("Proto Meta | %d-way %d-shot %d-query | %d episodes/epoch | %d epoch" %
           (N_WAY, K_SHOT, Q_QUERY, EPISODES_PER_EPOCH, args.epochs))
 
+    best_test_acc = 0.0
+    best_state = {key: value.cpu().clone() for key, value in net.state_dict().items()}
     for epoch in range(args.epochs):
         net.train()
         total_loss = total_acc = 0.0
@@ -141,20 +143,24 @@ def main():
                 test_correct += (main_logits.argmax(1).cpu() == labels).sum().item()
                 test_total += labels.size(0)
         test_acc = test_correct / test_total
+        if test_acc > best_test_acc:
+            best_test_acc = test_acc
+            best_state = {key: value.cpu().clone() for key, value in net.state_dict().items()}
 
         done = epoch + 1
         bar = "#" * (done * 20 // args.epochs) + "-" * (20 - done * 20 // args.epochs)
-        print("\r  Ep%2d/%d [%s] proto_loss=%.3f proto_acc=%.3f test=%.4f" %
+        print("\r  Ep%2d/%d [%s] proto_loss=%.3f proto_acc=%.3f test=%.4f best=%.4f" %
               (done, args.epochs, bar,
                total_loss / EPISODES_PER_EPOCH,
-               total_acc / EPISODES_PER_EPOCH, test_acc),
+               total_acc / EPISODES_PER_EPOCH, test_acc, best_test_acc),
               end="", flush=True)
     print()
 
+    net.load_state_dict(best_state)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = "output/meta_%s.pth" % timestamp
     torch.save(net.state_dict(), save_path)
-    print("Saved:", save_path)
+    print("Saved best (test=%.4f): %s" % (best_test_acc, save_path))
 
 
 if __name__ == "__main__":
