@@ -25,7 +25,7 @@ from project_constants import (
     PRETRAIN_EPOCHS,
 )
 
-MASK_RATIO = 0.3   # 遮 30% 的 patch
+MASK_RATIO = 0.75  # 遮 75% (MAE 论文标准, 30% 太简单退化为邻域插值)
 PATCH_SIZE = 4     # patch 大小
 DEFAULT_POOL = "/root/autodl-tmp/pretrain_pool.pt"
 
