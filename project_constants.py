@@ -34,3 +34,9 @@ CONFUSABLE_PAIRS = (
     ("5", "S"),
     ("C", "c"),
 )
+
+# Pair aux head: 主头治不动的混淆字符 + "other", 11-way 细分类任务.
+# 强迫 unified 特征学到 0/O/o, 1/I/l 这种细微区分.
+CONFUSABLE_UNION = ("0", "O", "o", "1", "I", "l", "5", "S", "C", "c")
+PAIR_NUM_CLASSES = len(CONFUSABLE_UNION) + 1  # 11 = 10 + "other"
+PAIR_OTHER_IDX = len(CONFUSABLE_UNION)        # 10

@@ -495,11 +495,13 @@ class HybridHandCharNet(nn.Module):
     """
     def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True,
                  rnn_cell='lstm', rnn_hidden=128, rnn_layers=2, rnn_proj_dim=256,
-                 use_grn=False, use_arcface=False, head_bottleneck=256, arcface_scale=30.0):
+                 use_grn=False, use_arcface=False, head_bottleneck=256, arcface_scale=30.0,
+                 use_pair_aux=False, pair_num_classes=11):
         super().__init__()
         self.use_rnn = use_rnn
         self.use_grn = use_grn
         self.use_arcface = use_arcface
+        self.use_pair_aux = use_pair_aux
 
         # Stem: 1/4 下采样
         self.stem = nn.Sequential(ConvBlock(1, 32, 7, 2, 3), nn.MaxPool2d(2))
@@ -599,6 +601,16 @@ class HybridHandCharNet(nn.Module):
             nn.Dropout(dropout * 0.5),
             nn.Linear(64, aux_classes),
         )
+        # head_pair (可选): 11-way 细分类 治混淆对 (0/O/o, 1/I/l, 5/S, C/c) + "other"
+        if use_pair_aux:
+            self.head_pair = nn.Sequential(
+                nn.Linear(unified_dim, 64),
+                nn.GELU(),
+                nn.Dropout(dropout * 0.5),
+                nn.Linear(64, pair_num_classes),
+            )
+        else:
+            self.head_pair = None
         # contrastive head 删除: 训练流程未启用, 占参数无收益
 
     def encode(self, x):
@@ -654,8 +666,10 @@ class HybridHandCharNet(nn.Module):
         unified = self.unified_feature(x)
         main_logits = self.head_main(unified)
         aux_logits = self.head_aux(unified)
-        # contrastive 占位 None: 保持 4 元组接口, 训练侧已不使用
-        return main_logits, aux_logits, None, unified
+        pair_logits = self.head_pair(unified) if self.head_pair is not None else None
+        # 5 元组接口: (main, aux, cont(=None), unified, pair_aux)
+        # 历史 4 元组消费者改成 5 元组解包; [0] 切片消费者不受影响.
+        return main_logits, aux_logits, None, unified, pair_logits
 
 
 # ====== RefinedHybridNet: UNet 4 级骨架, 4 模块分级配置 ======

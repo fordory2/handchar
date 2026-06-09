@@ -19,13 +19,14 @@ from data_utils import CharDataset, collate_with_augment, load_split_data
 from focal import FocalLoss
 from models import HybridHandCharNet
 from project_constants import (
-    AUX_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS, DEVICE, LEARNING_RATE,
-    NUM_CLASSES, TRAIN_EPOCHS,
+    AUX_CLASSES, BATCH_SIZE, CONFUSABLE_PAIRS, CONFUSABLE_UNION, DEVICE,
+    LEARNING_RATE, NUM_CLASSES, PAIR_NUM_CLASSES, PAIR_OTHER_IDX, TRAIN_EPOCHS,
 )
 from training_utils import compute_pair_accuracy
 
 CONTRASTIVE_WEIGHT = 0.1
 AUX_WEIGHT = 0.1
+PAIR_WEIGHT = 0.2  # 直接打击 worst10 字符, 权重略高于 aux 3 分类
 
 
 def aux_label_from_char(char):
@@ -73,6 +74,13 @@ def main():
         dtype=torch.long, device=DEVICE,
     )
 
+    # pair aux 标签查找表 (idx -> 0..10): 10 个混淆字符细分, 其它一律映射到 "other"
+    union_to_idx = {ch: i for i, ch in enumerate(CONFUSABLE_UNION)}
+    pair_lookup = torch.tensor(
+        [union_to_idx.get(i2l[i], PAIR_OTHER_IDX) for i in range(NUM_CLASSES)],
+        dtype=torch.long, device=DEVICE,
+    )
+
     train_ds = CharDataset(train_data, train=True)
     test_ds = CharDataset(test_data, train=False)
     train_loader = DataLoader(train_ds, BATCH_SIZE, shuffle=True,
@@ -86,6 +94,8 @@ def main():
         rnn_hidden=args.rnn_hidden,
         rnn_layers=args.rnn_layers,
         rnn_proj_dim=args.rnn_proj_dim,
+        use_pair_aux=True,
+        pair_num_classes=PAIR_NUM_CLASSES,
     ).to(DEVICE)
     n_params = sum(p.numel() for p in net.parameters())
     rnn_desc = "off" if args.no_rnn else "%s/h%d/L%d/d%d" % (
@@ -104,6 +114,7 @@ def main():
 
     focal_crit = FocalLoss(gamma=2.0, smoothing=0.1)
     aux_crit = nn.CrossEntropyLoss()
+    pair_crit = nn.CrossEntropyLoss()
     optimizer = AdamW(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
@@ -111,28 +122,35 @@ def main():
     best_state = {key: value.cpu().clone() for key, value in net.state_dict().items()}
     for epoch in range(args.epochs):
         net.train()
-        total_loss = total_main = total_aux = total_cont = 0.0
+        total_loss = total_main = total_aux = total_cont = total_pair = 0.0
         correct = total = 0
         for images, labels in train_loader:
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             aux_labels = aux_lookup[labels]
+            pair_labels = pair_lookup[labels]
             optimizer.zero_grad()
-            main_logits, aux_logits, cont_feat, _ = net(images)
+            main_logits, aux_logits, cont_feat, _, pair_logits = net(images)
             main_loss = focal_crit(main_logits, labels)
             aux_loss = aux_crit(aux_logits, aux_labels)
+            loss = main_loss + AUX_WEIGHT * aux_loss
             # cont_feat 可能为 None (新模型已移除 contrastive head); 此时跳过对比损失
             if cont_feat is not None:
                 cont_loss = contrastive_loss(cont_feat, labels, pair_table)
-                loss = main_loss + AUX_WEIGHT * aux_loss + CONTRASTIVE_WEIGHT * cont_loss
+                loss = loss + CONTRASTIVE_WEIGHT * cont_loss
             else:
                 cont_loss = torch.zeros((), device=DEVICE)
-                loss = main_loss + AUX_WEIGHT * aux_loss
+            if pair_logits is not None:
+                pair_loss = pair_crit(pair_logits, pair_labels)
+                loss = loss + PAIR_WEIGHT * pair_loss
+            else:
+                pair_loss = torch.zeros((), device=DEVICE)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
             total_main += main_loss.item()
             total_aux += aux_loss.item()
             total_cont += cont_loss.item()
+            total_pair += pair_loss.item()
             correct += (main_logits.argmax(1) == labels).sum().item()
             total += labels.size(0)
         scheduler.step()
@@ -143,7 +161,7 @@ def main():
         with torch.no_grad():
             for images, labels in test_loader:
                 images = images.to(DEVICE)
-                main_logits, _, _, _ = net(images)
+                main_logits = net(images)[0]
                 test_correct += (main_logits.argmax(1).cpu() == labels).sum().item()
                 test_total += labels.size(0)
         test_acc = test_correct / test_total
@@ -154,9 +172,10 @@ def main():
         n_batches = len(train_loader)
         done = epoch + 1
         bar = "#" * (done * 20 // args.epochs) + "-" * (20 - done * 20 // args.epochs)
-        print("\r  Ep%2d/%d [%s] main=%.3f aux=%.3f cnt=%.3f train=%.3f test=%.4f best=%.4f" %
+        print("\r  Ep%2d/%d [%s] main=%.3f aux=%.3f cnt=%.3f pair=%.3f train=%.3f test=%.4f best=%.4f" %
               (done, args.epochs, bar, total_main / n_batches,
-               total_aux / n_batches, total_cont / n_batches, train_acc, test_acc, best_test_acc),
+               total_aux / n_batches, total_cont / n_batches, total_pair / n_batches,
+               train_acc, test_acc, best_test_acc),
               end="", flush=True)
     print()
 

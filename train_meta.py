@@ -139,7 +139,7 @@ def main():
         with torch.no_grad():
             for images, labels in test_loader:
                 images = images.to(DEVICE)
-                main_logits, _, _, _ = net(images)
+                main_logits = net(images)[0]
                 test_correct += (main_logits.argmax(1).cpu() == labels).sum().item()
                 test_total += labels.size(0)
         test_acc = test_correct / test_total
