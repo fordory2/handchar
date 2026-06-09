@@ -27,6 +27,7 @@ from models import (
     HandCharNetNoSe,
     HandCharNetResGELU,
     HybridHandCharNet,
+    RefinedHybridNet,
     ConvNeXtV2Char,
     MobileNetV4Char,
     ResNet18Char,
@@ -67,6 +68,80 @@ def hybrid_transformer_factory(num_classes):
                               rnn_proj_dim=128)
 
 
+class _RefinedHybridForCompare(nn.Module):
+    """RefinedHybridNet 包成单输出的 model_factory(num_classes) 接口."""
+    def __init__(self, num_classes=NUM_CLASSES, **kwargs):
+        super().__init__()
+        self.refined = RefinedHybridNet(num_classes=num_classes, **kwargs)
+
+    def forward(self, x):
+        return self.refined(x)[0]
+
+
+def refined_full_factory(num_classes):
+    """RefinedHybrid + Full BiLSTM. RNN 接 bottleneck (CRNN 风格, 文献首选)."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                                     rnn_proj_dim=256, rnn_attach_to='bottleneck')
+
+
+def refined_no_rnn_factory(num_classes):
+    return _RefinedHybridForCompare(num_classes, use_rnn=False)
+
+
+def refined_tiny_factory(num_classes):
+    """RefinedHybrid + TinyGRU. RNN 接 bottleneck."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                                     rnn_proj_dim=128, rnn_attach_to='bottleneck')
+
+
+def refined_trans_factory(num_classes):
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='transformer', rnn_layers=1,
+                                     rnn_proj_dim=128, rnn_attach_to='bottleneck')
+
+
+def refined_grn_full_factory(num_classes):
+    """RefinedHybrid + Full BiLSTM + GRN. 阶段 2 候选."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                                     rnn_proj_dim=256, rnn_attach_to='bottleneck',
+                                     use_grn=True)
+
+
+def refined_grn_tiny_factory(num_classes):
+    """RefinedHybrid + TinyGRU + GRN. 阶段 2 候选."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                                     rnn_proj_dim=128, rnn_attach_to='bottleneck',
+                                     use_grn=True)
+
+
+def refined_grn_no_rnn_factory(num_classes):
+    """RefinedHybrid (no RNN) + GRN. 阶段 2 候选."""
+    return _RefinedHybridForCompare(num_classes, use_rnn=False, use_grn=True)
+
+
+# RNN 挂载点消融: TinyGRU 在 bottleneck / dec3 / dec2 / dec1 4 个位置
+def refined_tiny_at_bottleneck(num_classes):
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                                     rnn_proj_dim=128, rnn_attach_to='bottleneck')
+
+
+def refined_tiny_at_dec3(num_classes):
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                                     rnn_proj_dim=128, rnn_attach_to='dec3')
+
+
+def refined_tiny_at_dec2(num_classes):
+    return _RefinedHybridForCompare(num_classes, use_rnn=True,
+                                     rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                                     rnn_proj_dim=128, rnn_attach_to='dec2')
+
+
 def stratified_k_fold(labels, n_splits=5, seed=42):
     rng = np.random.RandomState(seed)
     class_idx = defaultdict(list)
@@ -92,9 +167,13 @@ def stratified_k_fold(labels, n_splits=5, seed=42):
     return pairs
 
 
-def train_one_fold(model_factory, train_loader, val_loader, test_dl, epochs, tag=""):
+def train_one_fold(model_factory, train_loader, val_loader, test_dl, epochs, tag="",
+                   mixup_alpha=0.0, cutmix_alpha=0.0):
     model = model_factory(NUM_CLASSES).to(DEVICE)
-    best_v, _ = fit_best_model(model, train_loader, val_loader, epochs, progress_label=tag)
+    best_v, _ = fit_best_model(model, train_loader, val_loader, epochs,
+                                progress_label=tag,
+                                mixup_alpha=mixup_alpha,
+                                cutmix_alpha=cutmix_alpha)
     t_acc = evaluate(model, test_dl)
     return model, best_v, t_acc
 
@@ -106,6 +185,10 @@ def main():
         parser.add_argument("--sota", action="store_true")
         parser.add_argument("--hybrid", action="store_true",
                             help="对比 Hybrid+RNN / Hybrid-RNN 与 baseline Full+SE")
+        parser.add_argument("--refined", action="store_true",
+                            help="对比 RefinedHybrid 4 个变体 (UNet 4 级骨架)")
+        parser.add_argument("--attach", action="store_true",
+                            help="对比 TinyGRU 在 bottleneck/dec3/dec2/dec1 4 个挂载点")
         parser.add_argument("--models", type=str, default="")
         parser.add_argument("--pairs", action="store_true")
         parser.add_argument("--folds", type=str, default="all")
@@ -140,6 +223,13 @@ def main():
         (hybrid_no_rnn_factory, "Hybrid-RNN"),
         (hybrid_tiny_rnn_factory, "Hybrid+TinyGRU"),
         (hybrid_transformer_factory, "Hybrid+Trans"),
+        (refined_full_factory, "Refined+RNN"),
+        (refined_no_rnn_factory, "Refined-RNN"),
+        (refined_tiny_factory, "Refined+TinyGRU"),
+        (refined_trans_factory, "Refined+Trans"),
+        (refined_tiny_at_bottleneck, "TinyGRU@Bottleneck"),
+        (refined_tiny_at_dec3, "TinyGRU@Dec3"),
+        (refined_tiny_at_dec2, "TinyGRU@Dec2"),
     ]
 
     selected = set()
@@ -152,7 +242,11 @@ def main():
     if args.sota:
         selected |= {14, 15, 16, 17}
     if args.hybrid:
-        selected |= {1, 6, 18, 19, 20}  # Full+SE 基线 + NoDir+ECA + Hybrid 三版 (RNN/无RNN/TinyGRU)
+        selected |= {1, 6, 18, 19, 20, 21}  # Full+SE + NoDir+ECA + Hybrid 4 版 (RNN/无RNN/TinyGRU/Trans)
+    if args.refined:
+        selected |= {18, 22, 23, 24, 25}  # Hybrid+RNN (50ep 冠军) + Refined 4 版
+    if args.attach:
+        selected |= {24, 26, 27, 28}  # TinyGRU @ dec1/bottleneck/dec3/dec2 挂载点消融
     if not selected:
         selected = set(range(len(all_models)))
     models = [all_models[i] for i in sorted(selected)]
@@ -189,7 +283,8 @@ def main():
 
             trained_model, val_acc, test_acc = train_one_fold(
                 model_factory, train_loader, val_loader,
-                holdout_loader, args.epochs, tag=model_name)
+                holdout_loader, args.epochs, tag=model_name,
+                mixup_alpha=args.mixup_alpha, cutmix_alpha=args.cutmix_alpha)
             results[model_name].append(test_acc)
             per_class = evaluate_per_class(trained_model, holdout_loader)
             for cls_idx in range(NUM_CLASSES):

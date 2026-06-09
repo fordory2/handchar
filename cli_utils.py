@@ -16,6 +16,10 @@ def make_parser():
 def add_training_arguments(parser):
     parser.add_argument("--epochs", type=int, default=TRAIN_EPOCHS)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--mixup_alpha", type=float, default=0.0,
+                        help="MixUp Beta 分布参数 (推荐 0.2)")
+    parser.add_argument("--cutmix_alpha", type=float, default=0.0,
+                        help="CutMix Beta 分布参数 (推荐 1.0)")
     return parser
 
 

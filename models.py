@@ -94,6 +94,22 @@ class ECABlock(nn.Module):
         return x * self.attn_dropout(weights)
 
 
+class GRN(nn.Module):
+    """Global Response Normalization, ConvNeXt V2 (Woo 2023).
+    抑制通道维度的 feature collapse, 残差形式 (γ 初始 0 → 训练时自学是否使用).
+    输入: [B, C, H, W], 输出: [B, C, H, W]
+    """
+    def __init__(self, channels):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
+
+    def forward(self, x):
+        gx = torch.norm(x, p=2, dim=(2, 3), keepdim=True)
+        nx = gx / (gx.mean(dim=1, keepdim=True) + 1e-6)
+        return self.gamma * (x * nx) + self.beta + x
+
+
 class CBAMBlock(nn.Module):
     def __init__(self, channels, reduction=8):
         super().__init__()
@@ -574,6 +590,180 @@ class HybridHandCharNet(nn.Module):
             rnn_feat = self.rnn_dropout(rnn_feat)
             return torch.cat([coarse_pooled, fine_pooled, rnn_feat], dim=1)
         return torch.cat([coarse_pooled, fine_pooled], dim=1)
+
+    def forward(self, x):
+        unified = self.unified_feature(x)
+        main_logits = self.head_main(unified)
+        aux_logits = self.head_aux(unified)
+        cont_feat = functional.normalize(self.head_contrastive(unified), dim=1)
+        return main_logits, aux_logits, cont_feat, unified
+
+
+# ====== RefinedHybridNet: UNet 4 级骨架, 4 模块分级配置 ======
+class RefinedHybridNet(nn.Module):
+    """以 UNet 4 级编解码为骨架, 把 4 个特殊模块按 inductive bias 分到各 encoder 级:
+      L1 (1/1 高分辨率): SpatialAttention   — 笔画局部空间位置
+      L2 (1/2 中分辨率): MultiScalePool     — 聚合多尺度上下文
+      L3 (1/4 低分辨率): FrequencyBlock     — 提取高层频率模式
+      Bottleneck (1/8): ECABlock            — 通道路由精炼
+    解码器每级 skip 连接 (concat + 1×1 conv + ResBlock + ECA).
+    分类头: GAP(bottleneck) ⊕ GAP(decoder_L1) ⊕ 可选 RNN(笔顺 W=48 步) → 3 头.
+    """
+    def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True,
+                 base_ch=32, rnn_cell='gru', rnn_hidden=64, rnn_layers=1, rnn_proj_dim=128,
+                 rnn_input_ch=16, rnn_attach_to='dec1', use_grn=False):
+        """rnn_attach_to: 'bottleneck' | 'dec3' | 'dec2' | 'dec1' — RNN 扫描在哪一级特征图.
+
+        默认 'dec1' (全分辨率 W=48), 但参数最多且最易过拟合;
+        'bottleneck' (W=6) 参数最少, 看高层语义; 'dec3'/'dec2' 中间.
+
+        use_grn: ConvNeXt V2 GRN 模块, 插入 bottleneck 和每个 decoder block 末尾,
+        残差形式 (γ 初始 0), 抑制 feature collapse, 对小数据正则化友好.
+        """
+        super().__init__()
+        self.use_rnn = use_rnn
+        self.use_grn = use_grn
+        self.rnn_cell = rnn_cell.lower() if use_rnn else None
+        self.rnn_attach_to = rnn_attach_to.lower() if use_rnn else None
+
+        c1 = base_ch
+        c2 = int(base_ch * 1.5)
+        c3 = int(base_ch * 2.25)
+        c4 = int(base_ch * 3.0)
+
+        # Stem (不下采样, 通道扩展)
+        self.stem = ConvBlock(1, c1, 7, 1, 3)
+
+        # Encoder L1: Spatial Attention
+        self.enc1 = ResBlock(c1, c1)
+        self.enc1_attn = SpatialAttentionBlock()
+        self.pool1 = nn.MaxPool2d(2)
+
+        # Encoder L2: Multi-scale 上下文
+        self.enc2 = ResBlock(c1, c2)
+        self.enc2_ms = MultiScalePool(c2, c2)
+        self.pool2 = nn.MaxPool2d(2)
+
+        # Encoder L3: Frequency 频域
+        self.enc3 = ResBlock(c2, c3)
+        self.enc3_freq = FrequencyBlock(c3, c3)
+        self.pool3 = nn.MaxPool2d(2)
+
+        # Bottleneck: 双 ResBlock + ECA 通道注意力 (+ 可选 GRN)
+        bottleneck_layers = [ResBlock(c3, c4), ECABlock(c4), ResBlock(c4, c4)]
+        if use_grn:
+            bottleneck_layers.append(GRN(c4))
+        self.bottleneck = nn.Sequential(*bottleneck_layers)
+
+        # Decoder L3: Up + skip3 + refine
+        self.up3 = nn.ConvTranspose2d(c4, c3, 2, 2)
+        dec3_layers = [ConvBlock(c3 * 2, c3, 1, 1, 0), ResBlock(c3, c3), ECABlock(c3)]
+        if use_grn:
+            dec3_layers.append(GRN(c3))
+        self.dec3 = nn.Sequential(*dec3_layers)
+        # Decoder L2: Up + skip2 + refine
+        self.up2 = nn.ConvTranspose2d(c3, c2, 2, 2)
+        dec2_layers = [ConvBlock(c2 * 2, c2, 1, 1, 0), ResBlock(c2, c2), ECABlock(c2)]
+        if use_grn:
+            dec2_layers.append(GRN(c2))
+        self.dec2 = nn.Sequential(*dec2_layers)
+        # Decoder L1: Up + skip1 + refine
+        self.up1 = nn.ConvTranspose2d(c2, c1, 2, 2)
+        dec1_layers = [ConvBlock(c1 * 2, c1, 1, 1, 0), ResBlock(c1, c1), ECABlock(c1)]
+        if use_grn:
+            dec1_layers.append(GRN(c1))
+        self.dec1 = nn.Sequential(*dec1_layers)
+
+        # 可选 RNN 扫描笔顺. 4 个挂载点 (基于 64×48 输入):
+        #   bottleneck: c4 ch,  8×6  → W=6  最少参数, 看高层语义
+        #   dec3:       c3 ch, 16×12 → W=12 中等抽象
+        #   dec2:       c2 ch, 32×24 → W=24 中等细节
+        #   dec1:       c1 ch, 64×48 → W=48 最细 (易过拟合)
+        if use_rnn:
+            attach_info = {
+                'bottleneck': (c4, 8, 6),
+                'dec3':       (c3, 16, 12),
+                'dec2':       (c2, 32, 24),
+                'dec1':       (c1, 64, 48),
+            }
+            if self.rnn_attach_to not in attach_info:
+                raise ValueError("rnn_attach_to must be one of %s" % list(attach_info.keys()))
+            src_ch, src_h, src_w = attach_info[self.rnn_attach_to]
+            self.rnn_src_h = src_h
+            self.rnn_src_w = src_w
+            self.rnn_chan_reduce = nn.Conv2d(src_ch, rnn_input_ch, 1, bias=False)
+            self.lstm_proj = nn.Linear(rnn_input_ch * src_h, rnn_proj_dim)
+            if self.rnn_cell == 'transformer':
+                self.pos_encoding = nn.Parameter(torch.zeros(src_w, 1, rnn_proj_dim))
+                nn.init.normal_(self.pos_encoding, std=0.02)
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=rnn_proj_dim, nhead=4,
+                    dim_feedforward=rnn_proj_dim * 2,
+                    dropout=dropout, batch_first=False,
+                )
+                self.lstm = nn.TransformerEncoder(encoder_layer, num_layers=rnn_layers)
+                rnn_dim = rnn_proj_dim
+            else:
+                rnn_cls = nn.GRU if self.rnn_cell == 'gru' else nn.LSTM
+                self.lstm = rnn_cls(rnn_proj_dim, rnn_hidden, num_layers=rnn_layers,
+                                    batch_first=False, bidirectional=True,
+                                    dropout=dropout if rnn_layers > 1 else 0.0)
+                rnn_dim = rnn_hidden * 2
+            self.rnn_dropout = nn.Dropout(dropout * 2)
+        else:
+            rnn_dim = 0
+
+        # 多尺度 GAP 头: bottleneck + decoder_L1
+        self.gap_bottleneck = nn.AdaptiveAvgPool2d(1)
+        self.gap_dec1 = nn.AdaptiveAvgPool2d(1)
+        unified_dim = c4 + c1 + rnn_dim
+        self.unified_dim = unified_dim
+
+        self.head_main = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(unified_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(128, num_classes),
+        )
+        self.head_aux = nn.Linear(unified_dim, aux_classes)
+        self.head_contrastive = nn.Linear(unified_dim, 128)
+
+    def encode(self, x):
+        """编码 + 解码全过, 返回所有中间特征 dict."""
+        x = self.stem(x)                                  # 64×48
+        e1 = self.enc1_attn(self.enc1(x))                 # 64×48 (skip1)
+        e2 = self.enc2_ms(self.enc2(self.pool1(e1)))      # 32×24 (skip2)
+        e3 = self.enc3_freq(self.enc3(self.pool2(e2)))    # 16×12 (skip3)
+        bottleneck = self.bottleneck(self.pool3(e3))      # 8×6
+        d3 = self.dec3(torch.cat([self.up3(bottleneck), e3], dim=1))  # 16×12
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))          # 32×24
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))          # 64×48
+        return {'bottleneck': bottleneck, 'dec3': d3, 'dec2': d2, 'dec1': d1}
+
+    def unified_feature(self, x):
+        feats = self.encode(x)
+        bottleneck = feats['bottleneck']
+        d1 = feats['dec1']
+        b_pool = self.gap_bottleneck(bottleneck).flatten(1)
+        d1_pool = self.gap_dec1(d1).flatten(1)
+        if self.use_rnn:
+            src = feats[self.rnn_attach_to]
+            src_reduced = self.rnn_chan_reduce(src)        # [B, rnn_input_ch, H, W]
+            b, c, h, w = src_reduced.shape
+            seq = src_reduced.permute(3, 0, 1, 2).reshape(w, b, c * h)
+            seq = self.lstm_proj(seq)
+            if self.rnn_cell == 'transformer':
+                seq = seq + self.pos_encoding[:seq.size(0)]
+                out = self.lstm(seq)
+                rnn_feat = out.mean(dim=0)
+            else:
+                rnn_out = self.lstm(seq)
+                hidden = rnn_out[1][0] if isinstance(rnn_out[1], tuple) else rnn_out[1]
+                rnn_feat = torch.cat([hidden[-2], hidden[-1]], dim=1)
+            rnn_feat = self.rnn_dropout(rnn_feat)
+            return torch.cat([b_pool, d1_pool, rnn_feat], dim=1)
+        return torch.cat([b_pool, d1_pool], dim=1)
 
     def forward(self, x):
         unified = self.unified_feature(x)

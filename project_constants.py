@@ -1,15 +1,21 @@
-"""Shared project constants."""
+"""Shared project constants.
 
+支持环境变量覆盖, 用于本地 (默认) vs AutoDL/Linux 4090 (env 覆盖):
+    export HANDCHAR_BATCH_SIZE=256
+    export HANDCHAR_NUM_WORKERS=8
+    export HANDCHAR_LR=0.004
+"""
+
+import os
 import torch
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-USE_AMP = DEVICE.type == "cuda"
-BATCH_SIZE = 64
-LEARNING_RATE = 0.001
+BATCH_SIZE = int(os.environ.get("HANDCHAR_BATCH_SIZE", 64))
+LEARNING_RATE = float(os.environ.get("HANDCHAR_LR", 0.001))
 NUM_CLASSES = 62
 AUX_CLASSES = 3   # digit / upper / lower
 DROPOUT = 0.146
-NUM_WORKERS = 0  # Windows: 单进程避免 _cache 多副本、速度波动
+NUM_WORKERS = int(os.environ.get("HANDCHAR_NUM_WORKERS", 0))  # Windows 默认 0; Linux 可设 8
 PIN_MEMORY = DEVICE.type == "cuda"
 torch.backends.cudnn.benchmark = False
 

@@ -61,6 +61,23 @@ class Augment:
         grid = functional.affine_grid(theta, batch.shape, align_corners=False)
         batch = functional.grid_sample(batch, grid, mode='bilinear',
                                        padding_mode='border', align_corners=False)
+        # 弹性形变 (一半图片, 手写识别核心增强)
+        elastic_mask = torch.rand(batch_size, device=device) > 0.5
+        if elastic_mask.any():
+            dx_field = (torch.rand(batch_size, 1, height, width, device=device) * 2 - 1) * 0.04
+            dy_field = (torch.rand(batch_size, 1, height, width, device=device) * 2 - 1) * 0.04
+            kernel_size = 5
+            gauss_kernel = torch.ones(1, 1, kernel_size, kernel_size, device=device) / (kernel_size ** 2)
+            dx_field = functional.conv2d(dx_field, gauss_kernel, padding=kernel_size // 2)
+            dy_field = functional.conv2d(dy_field, gauss_kernel, padding=kernel_size // 2)
+            ys, xs = torch.meshgrid(torch.linspace(-1, 1, height, device=device),
+                                     torch.linspace(-1, 1, width, device=device), indexing='ij')
+            ys = ys.unsqueeze(0).expand(batch_size, -1, -1)
+            xs = xs.unsqueeze(0).expand(batch_size, -1, -1)
+            elastic_grid = torch.stack([xs + dx_field.squeeze(1), ys + dy_field.squeeze(1)], dim=-1)
+            batch_e = functional.grid_sample(batch, elastic_grid, mode='bilinear',
+                                              padding_mode='border', align_corners=False)
+            batch = torch.where(elastic_mask.view(-1, 1, 1, 1), batch_e, batch)
         # 高斯噪声 (一半图片)
         mask = torch.rand(batch_size, device=device) > 0.5
         if mask.any():
