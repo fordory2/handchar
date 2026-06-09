@@ -473,9 +473,11 @@ class HybridHandCharNet(nn.Module):
     输出: (main_logits[B,62], aux_logits[B,3], cont_feat[B,128], unified_feat)
     """
     def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True,
-                 rnn_cell='lstm', rnn_hidden=128, rnn_layers=2, rnn_proj_dim=256):
+                 rnn_cell='lstm', rnn_hidden=128, rnn_layers=2, rnn_proj_dim=256,
+                 use_grn=False):
         super().__init__()
         self.use_rnn = use_rnn
+        self.use_grn = use_grn
 
         # Stem: 1/4 下采样
         self.stem = nn.Sequential(ConvBlock(1, 32, 7, 2, 3), nn.MaxPool2d(2))
@@ -507,6 +509,17 @@ class HybridHandCharNet(nn.Module):
         self.fuse3 = ConvBlock(128 + 80, 128, 1, 1, 0)              # concat feat_mid (80ch)
         self.up2 = nn.ConvTranspose2d(128, 64, 2, 2)                # → [B,64,16,12]
         self.fuse2 = ConvBlock(64 + 64, 64, 1, 1, 0)                # concat feat_fine (64ch)
+
+        # 可选 GRN: 插在 4 个关键节点 (残差形式, γ=0 初始 → 不破基线)
+        #   grn_fuse:   branch_fuse 后, 多尺度融合点 (64ch)
+        #   grn_stage3: stage3 后, 最深语义 (160ch)
+        #   grn_dec3:   fuse3 后, decoder 中层 (128ch)
+        #   grn_dec2:   fuse2 后, decoder_out / RNN 接入点 (64ch)
+        if use_grn:
+            self.grn_fuse = GRN(64)
+            self.grn_stage3 = GRN(160)
+            self.grn_dec3 = GRN(128)
+            self.grn_dec2 = GRN(64)
 
         # 可选序列建模: decoder_out [B,64,16,12] → W=12 步, 每步 64*16=1024 维
         # rnn_cell: 'lstm' | 'gru' | 'transformer'
@@ -560,13 +573,21 @@ class HybridHandCharNet(nn.Module):
             self.multiscale_branch(x),
         ]
         feat_fine = self.branch_fuse(torch.cat(branches, dim=1))
+        if self.use_grn:
+            feat_fine = self.grn_fuse(feat_fine)
         feat_mid = self.stage1(feat_fine)
         feat_coarse_pre = self.stage2(feat_mid)
         feat_coarse = self.stage3(feat_coarse_pre)
+        if self.use_grn:
+            feat_coarse = self.grn_stage3(feat_coarse)
         up = self.up3(feat_coarse)
         up = self.fuse3(torch.cat([up, feat_mid], dim=1))
+        if self.use_grn:
+            up = self.grn_dec3(up)
         up = self.up2(up)
         decoder_out = self.fuse2(torch.cat([up, feat_fine], dim=1))
+        if self.use_grn:
+            decoder_out = self.grn_dec2(decoder_out)
         return feat_coarse, decoder_out
 
     def unified_feature(self, x):

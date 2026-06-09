@@ -68,6 +68,25 @@ def hybrid_transformer_factory(num_classes):
                               rnn_proj_dim=128)
 
 
+def hybrid_grn_full_factory(num_classes):
+    """Hybrid + Full BiLSTM + GRN. GRN 插 branch_fuse / stage3 / dec3 / dec2 (γ=0 残差)."""
+    return _HybridForCompare(num_classes, use_rnn=True,
+                              rnn_cell='lstm', rnn_hidden=128, rnn_layers=2,
+                              rnn_proj_dim=256, use_grn=True)
+
+
+def hybrid_grn_tiny_factory(num_classes):
+    """Hybrid + TinyGRU + GRN."""
+    return _HybridForCompare(num_classes, use_rnn=True,
+                              rnn_cell='gru', rnn_hidden=64, rnn_layers=1,
+                              rnn_proj_dim=128, use_grn=True)
+
+
+def hybrid_grn_no_rnn_factory(num_classes):
+    """Hybrid (no RNN) + GRN."""
+    return _HybridForCompare(num_classes, use_rnn=False, use_grn=True)
+
+
 class _RefinedHybridForCompare(nn.Module):
     """RefinedHybridNet 包成单输出的 model_factory(num_classes) 接口."""
     def __init__(self, num_classes=NUM_CLASSES, **kwargs):
@@ -185,6 +204,8 @@ def main():
         parser.add_argument("--sota", action="store_true")
         parser.add_argument("--hybrid", action="store_true",
                             help="对比 Hybrid+RNN / Hybrid-RNN 与 baseline Full+SE")
+        parser.add_argument("--hybrid-grn", dest="hybrid_grn", action="store_true",
+                            help="对比 Hybrid+RNN baseline 与 Hybrid+GRN 3 变体")
         parser.add_argument("--refined", action="store_true",
                             help="对比 RefinedHybrid 4 个变体 (UNet 4 级骨架)")
         parser.add_argument("--attach", action="store_true",
@@ -223,6 +244,9 @@ def main():
         (hybrid_no_rnn_factory, "Hybrid-RNN"),
         (hybrid_tiny_rnn_factory, "Hybrid+TinyGRU"),
         (hybrid_transformer_factory, "Hybrid+Trans"),
+        (hybrid_grn_full_factory, "Hybrid+GRN+RNN"),
+        (hybrid_grn_tiny_factory, "Hybrid+GRN+TinyGRU"),
+        (hybrid_grn_no_rnn_factory, "Hybrid+GRN-RNN"),
         (refined_full_factory, "Refined+RNN"),
         (refined_no_rnn_factory, "Refined-RNN"),
         (refined_tiny_factory, "Refined+TinyGRU"),
@@ -243,10 +267,12 @@ def main():
         selected |= {14, 15, 16, 17}
     if args.hybrid:
         selected |= {1, 6, 18, 19, 20, 21}  # Full+SE + NoDir+ECA + Hybrid 4 版 (RNN/无RNN/TinyGRU/Trans)
+    if args.hybrid_grn:
+        selected |= {18, 22, 23, 24}  # Hybrid+RNN baseline + Hybrid GRN 3 版 (RNN/TinyGRU/无RNN)
     if args.refined:
-        selected |= {18, 22, 23, 24, 25}  # Hybrid+RNN (50ep 冠军) + Refined 4 版
+        selected |= {18, 25, 26, 27, 28}  # Hybrid+RNN (50ep 冠军) + Refined 4 版
     if args.attach:
-        selected |= {24, 26, 27, 28}  # TinyGRU @ dec1/bottleneck/dec3/dec2 挂载点消融
+        selected |= {27, 29, 30, 31}  # TinyGRU @ dec1/bottleneck/dec3/dec2 挂载点消融
     if not selected:
         selected = set(range(len(all_models)))
     models = [all_models[i] for i in sorted(selected)]
