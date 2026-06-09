@@ -1,5 +1,6 @@
 # noinspection SpellCheckingInspection
-"""模型定义: 组件 + 工厂 + 14模型 + SOTA基线"""
+"""模型定义: 组件 + 工厂 + 14模型 + SOTA基线 + HybridHandCharNet"""
+import math
 from typing import Optional
 
 import numpy as np
@@ -169,6 +170,48 @@ class MultiScalePool(nn.Module):
         p2 = functional.interpolate(self.conv_p2(self.pool2(x)), size=sz, mode='nearest')
         p3 = functional.interpolate(self.conv_p3(self.pool3(x)), size=sz, mode='nearest')
         return functional.relu(self.bn(torch.cat([x0, p1, p2, p3], 1)))
+
+
+class SpatialAttentionBlock(nn.Module):
+    """空间注意力: 通道维 avg+max pool, 7×7 conv 学每个位置权重 (CBAM 的空间分支单拎出)."""
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_pool = x.mean(dim=1, keepdim=True)
+        max_pool = x.max(dim=1, keepdim=True)[0]
+        weights = self.sigmoid(self.conv(torch.cat([avg_pool, max_pool], dim=1)))
+        return x * weights
+
+
+class FrequencyBlock(nn.Module):
+    """DCT 频域分支: 2D DCT-II → 频域 1×1 conv 学习滤波 → IDCT → 3×3 conv 投影."""
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        self.freq_conv = nn.Conv2d(in_c, in_c, 1, bias=False)
+        self.fuse = nn.Conv2d(in_c, out_c, 3, 1, 1, bias=False)
+        self.bn = nn.BatchNorm2d(out_c)
+        self.act = nn.ReLU()
+
+    @staticmethod
+    def _dct_matrix(n, device, dtype):
+        ks = torch.arange(n, device=device, dtype=dtype).unsqueeze(1)
+        ns = torch.arange(n, device=device, dtype=dtype).unsqueeze(0)
+        m = torch.cos(math.pi * (2 * ns + 1) * ks / (2 * n))
+        m[0] *= 1.0 / math.sqrt(n)
+        m[1:] *= math.sqrt(2.0 / n)
+        return m
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        mh = self._dct_matrix(h, x.device, x.dtype)
+        mw = self._dct_matrix(w, x.device, x.dtype)
+        x_freq = mh @ x.reshape(b * c, h, w) @ mw.t()
+        x_freq = self.freq_conv(x_freq.reshape(b, c, h, w))
+        x_back = mh.t() @ x_freq.reshape(b * c, h, w) @ mw
+        return self.act(self.bn(self.fuse(x_back.reshape(b, c, h, w))))
 
 
 # ====== HandCharNet 工厂 ======
@@ -404,3 +447,111 @@ class CRNNCharNet(nn.Module):
         seq = self.lstm_proj(seq)
         _, (hidden_state, _) = self.lstm(seq)
         return self.head(torch.cat([hidden_state[-2], hidden_state[-1]], 1))
+
+
+# ====== HybridHandCharNet: 4 分支 + UNet skip + BiLSTM + 多头输出 ======
+class HybridHandCharNet(nn.Module):
+    """大一统模型: 空间/频率/通道/多尺度 4 分支 → UNet 跳跃 → 可选 BiLSTM → 主+aux+contrastive 三头.
+
+    输入: [B, 1, 64, 48] (H=64, W=48)
+    输出: (main_logits[B,62], aux_logits[B,3], cont_feat[B,128], unified_feat)
+    """
+    def __init__(self, num_classes=62, aux_classes=3, dropout=0.146, use_rnn=True):
+        super().__init__()
+        self.use_rnn = use_rnn
+
+        # Stem: 1/4 下采样
+        self.stem = nn.Sequential(ConvBlock(1, 32, 7, 2, 3), nn.MaxPool2d(2))
+
+        # 4 个并联分支 (输入 [B,32,16,12], 每路输出 16 通道)
+        branch_c = 16
+        stem_c = 32
+        self.spatial_branch = nn.Sequential(
+            SpatialAttentionBlock(),
+            ConvBlock(stem_c, branch_c, 3, 1, 1),
+        )
+        self.frequency_branch = FrequencyBlock(stem_c, branch_c)
+        self.channel_branch = nn.Sequential(
+            ECABlock(stem_c),
+            ConvBlock(stem_c, branch_c, 3, 1, 1),
+        )
+        self.multiscale_branch = MultiScalePool(stem_c, branch_c)
+        # 4×16 → 64 通道融合
+        self.branch_fuse = ConvBlock(branch_c * 4, 64, 1, 1, 0)
+        # 输出 feat_fine: [B,64,16,12]
+
+        # Encoder
+        self.stage1 = nn.Sequential(ResBlock(64, 80), nn.MaxPool2d(2))   # [B,80,8,6]
+        self.stage2 = nn.Sequential(ResBlock(80, 128), nn.MaxPool2d(2))  # [B,128,4,3]
+        self.stage3 = ResBlock(128, 160)                                  # [B,160,4,3]
+
+        # UNet 风格 decoder
+        self.up3 = nn.ConvTranspose2d(160, 128, 2, 2)               # → [B,128,8,6]
+        self.fuse3 = ConvBlock(128 + 80, 128, 1, 1, 0)              # concat feat_mid (80ch)
+        self.up2 = nn.ConvTranspose2d(128, 64, 2, 2)                # → [B,64,16,12]
+        self.fuse2 = ConvBlock(64 + 64, 64, 1, 1, 0)                # concat feat_fine (64ch)
+
+        # 可选 BiLSTM (沿宽度扫笔顺): decoder_out [B,64,16,12], W=12 步, 每步 64*16=1024 维
+        if use_rnn:
+            self.lstm_proj = nn.Linear(64 * 16, 256)
+            self.lstm = nn.LSTM(256, 128, num_layers=2, batch_first=False,
+                                bidirectional=True, dropout=dropout)
+            rnn_dim = 256
+        else:
+            rnn_dim = 0
+
+        # 全局聚合 + 多头
+        self.gap_coarse = nn.AdaptiveAvgPool2d(1)
+        self.gap_fine = nn.AdaptiveAvgPool2d(1)
+        unified_dim = 160 + 64 + rnn_dim
+        self.unified_dim = unified_dim
+
+        self.head_main = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(unified_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(128, num_classes),
+        )
+        self.head_aux = nn.Linear(unified_dim, aux_classes)
+        self.head_contrastive = nn.Linear(unified_dim, 128)
+
+    def encode(self, x):
+        """编码到 (feat_coarse, decoder_out), 供 MAE / Proto 复用."""
+        x = self.stem(x)
+        branches = [
+            self.spatial_branch(x),
+            self.frequency_branch(x),
+            self.channel_branch(x),
+            self.multiscale_branch(x),
+        ]
+        feat_fine = self.branch_fuse(torch.cat(branches, dim=1))
+        feat_mid = self.stage1(feat_fine)
+        feat_coarse_pre = self.stage2(feat_mid)
+        feat_coarse = self.stage3(feat_coarse_pre)
+        up = self.up3(feat_coarse)
+        up = self.fuse3(torch.cat([up, feat_mid], dim=1))
+        up = self.up2(up)
+        decoder_out = self.fuse2(torch.cat([up, feat_fine], dim=1))
+        return feat_coarse, decoder_out
+
+    def unified_feature(self, x):
+        """供 Proto 元学习用: 输出 unified flat 特征向量 [B, unified_dim]."""
+        feat_coarse, decoder_out = self.encode(x)
+        coarse_pooled = self.gap_coarse(feat_coarse).flatten(1)
+        fine_pooled = self.gap_fine(decoder_out).flatten(1)
+        if self.use_rnn:
+            b, c, h, w = decoder_out.shape
+            seq = decoder_out.permute(3, 0, 1, 2).reshape(w, b, c * h)
+            seq = self.lstm_proj(seq)
+            _, (hidden, _) = self.lstm(seq)
+            rnn_feat = torch.cat([hidden[-2], hidden[-1]], dim=1)
+            return torch.cat([coarse_pooled, fine_pooled, rnn_feat], dim=1)
+        return torch.cat([coarse_pooled, fine_pooled], dim=1)
+
+    def forward(self, x):
+        unified = self.unified_feature(x)
+        main_logits = self.head_main(unified)
+        aux_logits = self.head_aux(unified)
+        cont_feat = functional.normalize(self.head_contrastive(unified), dim=1)
+        return main_logits, aux_logits, cont_feat, unified
