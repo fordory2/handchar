@@ -1328,7 +1328,7 @@ class DisentangledNet(nn.Module):
         try:
             self.backbone = timm.create_model(
                 model_name, pretrained=pretrained, in_chans=in_chans,
-                features_only=True, out_indices=(1, 2, 3, 4))
+                features_only=True, out_indices=(0, 1, 2, 3))
         except Exception as e:
             raise RuntimeError(
                 "DisentangledNet needs backbone with features_only. "

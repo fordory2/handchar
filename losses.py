@@ -106,6 +106,7 @@ def residual_loss(logits_shape, logits_final, Delta, targets,
     Returns:
         scalar loss, dict of per-term values (for logging)
     """
+    import torch.nn as nn
     ce = nn.CrossEntropyLoss()
     L_shape = ce(logits_shape, targets)
     L_final = ce(logits_final, targets)

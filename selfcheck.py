@@ -54,11 +54,12 @@ def main():
     check("3b. TransferBackboneMS 前向", lambda: fwd(models.TransferBackboneMS))
     check("3c. TransferBackboneAdapter 前向", lambda: fwd(models.TransferBackboneAdapter))
 
-    # 3d. DisentangledNet 前向 (双流 + 残差)
+    # 3d. DisentangledNet 前向 (双流 + 残差, 需 3ch 输入)
     def fwd_disentangled():
+        x3 = torch.randn(2, 3, 160, 160)
         net = models.DisentangledNet(model_name="convnextv2_nano", num_classes=NUM_CLASSES,
                                      pretrained=False, input_size=160).eval()
-        logits_final, fused, logits_shape = net(x)
+        logits_final, fused, logits_shape = net(x3)
         assert logits_final.shape == (2, NUM_CLASSES), "logits_final shape %s" % (logits_final.shape,)
         assert logits_shape.shape == (2, NUM_CLASSES), "logits_shape shape %s" % (logits_shape.shape,)
         Delta = logits_final - logits_shape
