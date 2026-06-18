@@ -80,6 +80,62 @@ class FocalLoss:
         return -(smooth_targets * log_probs * focal_weight).sum(-1).mean()
 
 
+
+
+def residual_loss(logits_shape, logits_final, Delta, targets,
+                  confusable_pairs_idx=None,
+                  lambda_sparse=1e-4, lambda_diff=0.1, diff_tau=0.01):
+    """残差损失: CE(shape) + CE(final) + λ₁|Δ|₁ + λ_diff·L_diff.
+
+    设计原理 (ResNet 残差哲学的损失函数版):
+      - logits_shape 走 GAP → 对尺寸/位移不变, C/c 天然模糊
+      - Δ 来自多尺度结构信息, 只在形状不够时修补
+      - L1 惩罚 → Δ 在 50 个非歧义类上自动 →0 (稀疏)
+      - L_diff → 歧义对上 Δ 有区分力 (不会退化到 Δ==常数)
+
+    Args:
+        logits_shape: [B,62] 形状流 logits (恒等路径)
+        logits_final: [B,62] 修正后 logits = logits_shape + Δ
+        Delta:        [B,62] 残差修正量 (用于 L1 和 L_diff)
+        targets:      [B]    真类索引
+        confusable_pairs_idx: list of (i,j) 歧义对索引
+        lambda_sparse: L1(Δ) 权重, 默认 1e-4 (需调: 太大会压死 Δ, 太小无稀疏效果)
+        lambda_diff:   L_diff 权重, 默认 0.1
+        diff_tau:      歧义对 Δ 差异的最小期望阈值 (平方差 < τ 就罚)
+
+    Returns:
+        scalar loss, dict of per-term values (for logging)
+    """
+    ce = nn.CrossEntropyLoss()
+    L_shape = ce(logits_shape, targets)
+    L_final = ce(logits_final, targets)
+    L_sparse = Delta.abs().mean()
+
+    L_diff = torch.tensor(0.0, device=Delta.device)
+    if confusable_pairs_idx and lambda_diff > 0:
+        diffs = []
+        for i, j in confusable_pairs_idx:
+            mask_i = (targets == i)
+            mask_j = (targets == j)
+            if mask_i.any() and mask_j.any():
+                delta_i = Delta[mask_i].mean(0)  # [62]
+                delta_j = Delta[mask_j].mean(0)  # [62]
+                sq_dist = (delta_i - delta_j).pow(2).mean()
+                diffs.append(torch.relu(diff_tau - sq_dist))
+        if diffs:
+            L_diff = torch.stack(diffs).mean()
+
+    total = L_shape + L_final + lambda_sparse * L_sparse + lambda_diff * L_diff
+
+    terms = {
+        'L_shape': L_shape.item(),
+        'L_final': L_final.item(),
+        'L_sparse': L_sparse.item(),
+        'L_diff': L_diff.item(),
+        'total': total.item(),
+    }
+    return total, terms
+
 def sigreg_loss(features, n_projections=1024, num_points=17, t_max=2.0):
     """SIGReg (Sketched Isotropic Gaussian Regularization, LeJEPA arXiv:2511.08544).
 

@@ -11,10 +11,11 @@ from torch.utils.data import DataLoader
 
 from data_utils import CharDataset, load_kfold_splits
 from metrics import classification_metrics
-from models import (ConvNeXtV2Char, HybridHandCharNet, HybridHandCharNetCnxBypassA,
-                    HybridHandCharNetCnxBypassB, HybridHandCharNetCnxStem,
-                    HybridHandCharNetR18Stem, ResNet18Pretrained, ResNet50UNetChar,
-                    TransferBackbone, TransferBackboneMS, TransferBackboneAdapter)
+from models import (ConvNeXtV2Char, DisentangledNet, HybridHandCharNet,
+                    HybridHandCharNetCnxBypassA, HybridHandCharNetCnxBypassB,
+                    HybridHandCharNetCnxStem, HybridHandCharNetR18Stem,
+                    ResNet18Pretrained, ResNet50UNetChar, TransferBackbone,
+                    TransferBackboneMS, TransferBackboneAdapter)
 from project_constants import BATCH_SIZE, CONFUSABLE_PAIRS, DEVICE, NUM_CLASSES
 from tta import tta_predict
 
@@ -63,6 +64,10 @@ def _build_net(state, arch):
         net.load_state_dict(state, strict=False)
         net.eval()
         return net
+    if arch == "disentangled":
+        net = DisentangledNet(model_name="convnextv2_femto", num_classes=NUM_CLASSES,
+                              pretrained=False, input_size=160).to(DEVICE)
+        net.load_state_dict(state, strict=False); net.eval(); return net
     if arch == "convnextv2p":
         net = ConvNeXtV2Char(num_classes=NUM_CLASSES, pretrained=False).to(DEVICE)
     elif arch == "resnet18p":

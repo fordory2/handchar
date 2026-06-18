@@ -65,6 +65,13 @@ def _build_net(args):
             model_name=args.transfer_model, num_classes=NUM_CLASSES, pretrained=True,
             input_size=args.transfer_input, ms_stages=args.transfer_ms_stages,
         ).to(DEVICE)
+    if args.arch == "disentangled":
+        from models import DisentangledNet
+        return DisentangledNet(
+            model_name=args.transfer_model, num_classes=NUM_CLASSES, pretrained=True,
+            input_size=args.transfer_input,
+            shape_dim=args.shape_dim, geo_dim=args.geo_dim,
+        ).to(DEVICE)
     if args.arch == "transfer_adapter":
         return TransferBackboneAdapter(
             model_name=args.transfer_model, num_classes=NUM_CLASSES, pretrained=True,
@@ -258,8 +265,22 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l):
             y_a = y_a.to(DEVICE)
             y_b = y_b.to(DEVICE)
             optimizer.zero_grad()
-            main_logits, unified, decoder_out = net(images)
-            loss = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
+            out = net(images)
+            if args.arch == "disentangled":
+                main_logits, unified, logits_shape = out
+                # focal_crit 用 main_logits, 残差损失用 logits_shape
+                loss_main = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
+                from losses import residual_loss
+                # 取 y_a 为主目标 (MixUp 时 y_a 权重≥0.5)
+                loss_res, res_terms = residual_loss(
+                    logits_shape, main_logits, main_logits - logits_shape, y_a,
+                    confusable_pairs_idx=_pair_idx,
+                    lambda_sparse=args.sparse_lambda, lambda_diff=args.diff_lambda)
+                loss = loss_main + loss_res
+                decoder_out = None
+            else:
+                main_logits, unified, decoder_out = out
+                loss = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
             # SIGReg (LeJEPA): 强制 unified 特征空间高斯; λ=0 时跳过
             if args.sigreg_lambda > 0.0:
                 loss = loss + args.sigreg_lambda * sigreg_loss(unified, n_projections=args.sigreg_proj)
@@ -357,7 +378,7 @@ def main():
                         choices=["hybrid", "resnet50_unet", "resnet18p", "convnextv2p",
                                  "hybrid_r18stem", "hybrid_cnxstem",
                                  "hybrid_cnxbypassA", "hybrid_cnxbypassB",
-                                 "transfer", "transfer_ms", "transfer_adapter"],
+                                 "transfer", "transfer_ms", "transfer_adapter", "disentangled"],
                         help="hybrid=HybridHandCharNet; resnet50_unet=ResNet50+UNet+LSTM; "
                              "resnet18p=ImageNet 预训练 ResNet18 + 1ch + 前层 Dropout2d; "
                              "convnextv2p=FCMAE+IN1k 预训练 ConvNeXtV2 atto + 1ch; "
@@ -399,6 +420,14 @@ def main():
                         help="余弦头/间隔的缩放 scale (默认 30)")
     parser.add_argument("--ecoc_length", type=int, default=127,
                         help="ECOC 头码字长度 (head=ecoc 时; 评估须与训练一致, 建议保持默认)")
+    parser.add_argument("--recon_lambda", type=float, default=0.0,
+                        help="disentangled: L1(Δ) 稀疏惩罚权重 (默认 1e-4)")
+    parser.add_argument("--diff_lambda", type=float, default=0.1,
+                        help="disentangled: 歧义对 Δ 差异鼓励权重 (默认 0.1)")
+    parser.add_argument("--shape_dim", type=int, default=192,
+                        help="disentangled: 形状流特征维度 (默认 192)")
+    parser.add_argument("--geo_dim", type=int, default=192,
+                        help="disentangled: 结构流特征维度 (默认 192)")
     parser.add_argument("--recon_lambda", type=float, default=0.0,
                         help="transfer_adapter 辅助重建解码器的损失权重 (自监督重建正则; "
                              "0=禁用; 建议 0.1~0.5)")
@@ -447,6 +476,8 @@ def main():
 
     os.makedirs("output", exist_ok=True)
     exclude_min = 51 if args.holdout_test else None
+    # 歧义对索引 (供 disentangled 残差损失用)
+    _pair_idx = [(l2i[a], l2i[b]) for a, b in CONFUSABLE_PAIRS if a in l2i and b in l2i]
     folds, all_labels, l2i = load_kfold_splits(
         n_splits=args.n_folds, random_state=args.seed, exclude_writer_min=exclude_min)
     i2l = {v: k for k, v in l2i.items()}

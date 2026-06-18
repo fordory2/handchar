@@ -54,6 +54,17 @@ def main():
     check("3b. TransferBackboneMS 前向", lambda: fwd(models.TransferBackboneMS))
     check("3c. TransferBackboneAdapter 前向", lambda: fwd(models.TransferBackboneAdapter))
 
+    # 3d. DisentangledNet 前向 (双流 + 残差)
+    def fwd_disentangled():
+        net = models.DisentangledNet(model_name="convnextv2_nano", num_classes=NUM_CLASSES,
+                                     pretrained=False, input_size=160).eval()
+        logits_final, fused, logits_shape = net(x)
+        assert logits_final.shape == (2, NUM_CLASSES), "logits_final shape %s" % (logits_final.shape,)
+        assert logits_shape.shape == (2, NUM_CLASSES), "logits_shape shape %s" % (logits_shape.shape,)
+        Delta = logits_final - logits_shape
+        assert Delta.abs().mean() < 0.1, "Δ should be near-zero at init (scale=0), got %.4f" % Delta.abs().mean()
+    check("3d. DisentangledNet 前向 (Δ≈0 at init)", fwd_disentangled)
+
     # 4. 全分支 + 强度 both + weber + 四种头
     def adapter(head, intensity="both"):
         net = models.TransferBackboneAdapter(
@@ -78,6 +89,21 @@ def main():
         l.backward()
         assert logits.grad is not None and torch.isfinite(l)
     check("5. FocalLoss(软标签+CosFace) 前向+反传", loss_fwd)
+
+    # 5b. 残差损失
+    def res_loss_fwd():
+        from losses import residual_loss
+        logits_shape = torch.randn(8, NUM_CLASSES)
+        Delta = torch.randn(8, NUM_CLASSES) * 0.1
+        logits_final = logits_shape + Delta
+        y = torch.randint(0, NUM_CLASSES, (8,))
+        pair_idx = [(0, 36), (10, 36)]
+        loss, terms = residual_loss(logits_shape, logits_final, Delta, y,
+                                    confusable_pairs_idx=pair_idx,
+                                    lambda_sparse=1e-4, lambda_diff=0.1)
+        assert torch.isfinite(loss)
+        assert all(k in terms for k in ['L_shape', 'L_final', 'L_sparse', 'L_diff'])
+    check("5b. residual_loss 前向", res_loss_fwd)
 
     # 6. 一步反传 (Adapter + 重建)
     def train_step():

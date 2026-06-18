@@ -1303,6 +1303,116 @@ class ResNet50UNetChar(nn.Module):
 
 # ====== TransferBackbone: 统一迁移学习骨干 (3ch + ImageNet 归一化 + 强 backbone) ======
 # ---- 推荐骨干清单 + 友好报错 ----
+
+
+# 新模型 04 | DisentangledNet —— 尺寸感知双流残差网络
+# 形状流(GAP, 刻意尺寸盲) + 结构流(多尺度GeM, 尺寸敏感) → 残差 logits
+# logits_final = logits_shape + Δ,  Δ L1 稀疏 → 只在歧义对上非零
+class DisentangledNet(nn.Module):
+    """双流解耦 + 残差分类头.
+
+    Stream S「形状 = 恒等路径」: backbone stage4 → GAP → logits_shape [B,62]
+        GAP 抹掉空间位置和绝对尺寸, C/c 在此路上天然接近.
+    Stream G「结构 = 残差路径」: backbone stage1-4 → 多尺度 GeM → f_geo
+        → [f_shape ⊕ f_geo] → Δ [B,62]. 多尺度保留尺寸信号, 区分歧义对.
+    logits_final = logits_shape + Δ, L1(Δ) 强制 Δ 稀疏.
+
+    返回 (logits_final, pooled_feat, logits_shape)
+        pooled_feat = concat(f_shape, f_geo) 供 SIGReg/freeze 等下游.
+    """
+    def __init__(self, model_name='convnextv2_femto', num_classes=62, pretrained=True,
+                 input_size=160, shape_dim=192, geo_dim=192):
+        super().__init__()
+        import timm
+        in_chans = 3
+        try:
+            self.backbone = timm.create_model(
+                model_name, pretrained=pretrained, in_chans=in_chans,
+                features_only=True, out_indices=(1, 2, 3, 4))
+        except Exception as e:
+            raise RuntimeError(
+                "DisentangledNet needs backbone with features_only. "
+                "ViT/DINOv2 not supported, use CNN (convnextv2_femto/efficientnet/resnet). "
+                "Error: %s" % str(e)) from e
+
+        # 取各 stage 输出通道数 (一次假前向)
+        dummy = torch.randn(1, in_chans, input_size, input_size)
+        with torch.no_grad():
+            feats = self.backbone(dummy)
+        stage_dims = [f.shape[1] for f in feats]  # [s1_dim, s2_dim, s3_dim, s4_dim]
+
+        # --- Stream S: 形状流 ---
+        self.shape_pool = nn.AdaptiveAvgPool2d(1)       # GAP → 尺寸盲
+        self.shape_proj = nn.Sequential(
+            nn.Linear(stage_dims[3], shape_dim),
+            nn.LayerNorm(shape_dim),
+            nn.GELU(),
+        )
+        self.shape_head = nn.Linear(shape_dim, num_classes)
+
+        # --- Stream G: 结构流 (多尺度 GeM) ---
+        self.geo_gems = nn.ModuleList([GeMPool() for _ in stage_dims])
+        self.geo_concat_dim = sum(stage_dims)  # s1+s2+s3+s4 通道和
+        self.geo_proj = nn.Sequential(
+            nn.Linear(self.geo_concat_dim, geo_dim),
+            nn.LayerNorm(geo_dim),
+            nn.GELU(),
+        )
+
+        # --- 残差融合 ---
+        self.residual_fc = nn.Sequential(
+            nn.Linear(shape_dim + geo_dim, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Linear(128, num_classes),
+        )
+        self.residual_scale = nn.Parameter(torch.zeros(1))  # 0-init: 初始 Δ=0
+
+    def forward(self, x):
+        feats = self.backbone(x)  # [s1,s2,s3,s4]
+
+        # Stream S: 形状
+        s4 = feats[3]                                  # [B, C4, H4, W4]
+        f_shape = self.shape_proj(
+            self.shape_pool(s4).flatten(1))            # [B, shape_dim]
+        logits_shape = self.shape_head(f_shape)        # [B, 62]
+
+        # Stream G: 结构
+        geo_parts = []
+        for gem, f in zip(self.geo_gems, feats):
+            geo_parts.append(gem(f))                   # each [B, C_i]
+        f_geo = self.geo_proj(torch.cat(geo_parts, 1)) # [B, geo_dim]
+
+        # 残差修正
+        fused = torch.cat([f_shape, f_geo], dim=1)     # [B, shape_dim+geo_dim]
+        Delta = self.residual_scale * self.residual_fc(fused)  # [B, 62]
+        logits_final = logits_shape + Delta
+
+        # pooled_feat 给 SIGReg / freeze 等下游; 第3位放 logits_shape 给残差损失
+        return logits_final, fused, logits_shape
+
+    # ---- 判别式LR / 冻结接口 (复用 _TransferCommon 的规范) ----
+    def param_groups(self, base_lr, backbone_lr_mult=0.1):
+        backbone_ids = set(id(p) for p in self.backbone.parameters())
+        backbone_p, head_p = [], []
+        for p in self.parameters():
+            if id(p) in backbone_ids:
+                backbone_p.append(p)
+            else:
+                head_p.append(p)
+        return [
+            {'params': backbone_p, 'lr': base_lr * backbone_lr_mult},
+            {'params': head_p, 'lr': base_lr},
+        ]
+
+    def freeze_backbone(self):
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+    def unfreeze_backbone(self):
+        for p in self.backbone.parameters():
+            p.requires_grad = True
+
 # name: (是否支持 features_only(可用于 transfer_ms/transfer_adapter), 备注)
 RECOMMENDED_BACKBONES = {
     "convnextv2_femto":         (True,  "推荐核心: 小数据甜点 ~5M (默认)"),
