@@ -71,6 +71,7 @@ def _build_net(args):
             model_name=args.transfer_model, num_classes=NUM_CLASSES, pretrained=True,
             input_size=args.transfer_input,
             shape_dim=args.shape_dim, geo_dim=args.geo_dim,
+            ista_steps=args.ista_steps,
         ).to(DEVICE)
     if args.arch == "transfer_adapter":
         return TransferBackboneAdapter(
@@ -428,6 +429,8 @@ def main():
                         help="disentangled: 形状流特征维度 (默认 192)")
     parser.add_argument("--geo_dim", type=int, default=192,
                         help="disentangled: 结构流特征维度 (默认 192)")
+    parser.add_argument("--ista_steps", type=int, default=2,
+                        help="disentangled: ChannelISTA 迭代步数 (默认 2; 0=关)")
     parser.add_argument("--recon_lambda", type=float, default=0.0,
                         help="transfer_adapter 辅助重建解码器的损失权重 (自监督重建正则; "
                              "0=禁用; 建议 0.1~0.5)")

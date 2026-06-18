@@ -52,6 +52,7 @@ def _add_model_args(p):
     p.add_argument("--geo_dim", type=int, default=192)
     p.add_argument("--sparse_lambda", type=float, default=1e-4)
     p.add_argument("--diff_lambda", type=float, default=0.1)
+    p.add_argument("--ista_steps", type=int, default=2)
     p.add_argument("--convnextv2p_input", type=int, default=96)
     p.add_argument("--resnet18p_input", type=int, default=128)
     p.add_argument("--no_rnn", action="store_true")

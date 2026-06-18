@@ -1321,7 +1321,7 @@ class DisentangledNet(nn.Module):
         pooled_feat = concat(f_shape, f_geo) 供 SIGReg/freeze 等下游.
     """
     def __init__(self, model_name='convnextv2_femto', num_classes=62, pretrained=True,
-                 input_size=160, shape_dim=192, geo_dim=192):
+                 input_size=160, shape_dim=192, geo_dim=192, ista_steps=2):
         super().__init__()
         import timm
         in_chans = 3
@@ -1356,6 +1356,10 @@ class DisentangledNet(nn.Module):
             nn.GELU(),
         )
         self.shape_head = nn.Linear(shape_dim, num_classes)
+
+        # --- ChannelISTA: 每 stage 挂一个通道稀疏编码 (内建自监督) ---
+        self.ista_layers = nn.ModuleList([
+            ChannelISTA(c, steps=ista_steps) for c in stage_dims])
 
         # --- Stream G: 结构流 (多尺度 GeM) ---
         self.geo_gems = nn.ModuleList([GeMPool() for _ in stage_dims])
@@ -1392,10 +1396,10 @@ class DisentangledNet(nn.Module):
             self.shape_pool(s4).flatten(1))            # [B, shape_dim]
         logits_shape = self.shape_head(f_shape)        # [B, 62]
 
-        # Stream G: 结构
+        # Stream G: 结构 (先 ISTA 稀疏编码, 再 GeM 池化)
         geo_parts = []
-        for gem, f in zip(self.geo_gems, feats):
-            geo_parts.append(gem(f))                   # each [B, C_i]
+        for ista, gem, f in zip(self.ista_layers, self.geo_gems, feats):
+            geo_parts.append(gem(ista(f)))                   # each [B, C_i]
         f_geo = self.geo_proj(torch.cat(geo_parts, 1)) # [B, geo_dim]
 
         # 残差修正
@@ -1582,6 +1586,45 @@ class GeMPool(nn.Module):
         p = self.p.clamp(min=1.0)
         pooled = functional.adaptive_avg_pool2d(x.clamp(min=self.eps).pow(p), 1)
         return pooled.pow(1.0 / p).flatten(1)
+
+
+# 新组件 10 | ChannelISTA —— ISTA 展开通道稀疏编码 (内建自监督结构学习)
+# 2 步 ISTA: z_{k+1} = S_θ(z_k + W_s·σ(W_e·z_k)), 软阈值杀纹理留结构, 重标定通道
+class ChannelISTA(nn.Module):
+    """通道级 ISTA 稀疏编码, 每步 = 过完备投影 → 非线性 → 稀疏重建 → 残差 + 软阈值.
+    K 步迭代后被激活的通道 = 结构相关 (笔画/边缘/拓扑), 被压制的 = 纹理/噪声.
+    内建自监督: 字典 W_e/W_s 在分类任务中端到端学习, 等价于在线结构-纹理解耦.
+    """
+    def __init__(self, channels, ratio=4, steps=2):
+        super().__init__()
+        hidden = max(channels // ratio, 8)
+        self.steps = steps
+        self.W_e = nn.ModuleList([nn.Linear(channels, hidden) for _ in range(steps)])
+        self.W_s = nn.ModuleList([nn.Linear(hidden, channels) for _ in range(steps)])
+        self.theta = nn.ParameterList([
+            nn.Parameter(0.5 * torch.ones(1)) for _ in range(steps)])
+        nn.init.xavier_uniform_(self.W_e[0].weight)
+        nn.init.xavier_uniform_(self.W_s[0].weight)
+        for k in range(1, steps):
+            nn.init.xavier_uniform_(self.W_e[k].weight, gain=0.5)
+            nn.init.xavier_uniform_(self.W_s[k].weight, gain=0.5)
+
+    def forward(self, x):  # [B, C, H, W] → [B, C, H, W]
+        # 通道描述子
+        z_pooled = x.mean(dim=[2, 3])  # [B, C]  (用 mean 非 GAP, 软阈值对尺度敏感)
+        z = z_pooled
+        for k in range(self.steps):
+            # ISTA step: z = S_θ(z + W_s·σ(W_e·z))
+            h = torch.nn.functional.silu(self.W_e[k](z))         # 过完备投影 → 非线性
+            r = self.W_s[k](h)                      # 稀疏重建
+            z = self._soft_threshold(z + r, self.theta[k])
+        # 重标定: -1..1 范围, 压死纹理通道, 放大结构通道
+        scale = torch.tanh(z - z_pooled) * 0.5 + 0.5  # [B, C], 归一化到 [0,1]
+        return x * scale.unsqueeze(-1).unsqueeze(-1)
+
+    @staticmethod
+    def _soft_threshold(x, theta):
+        return torch.sign(x) * torch.relu(torch.abs(x) - theta)
 
 
 def _intensity_stats(x):
