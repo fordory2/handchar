@@ -18,6 +18,7 @@ DROPOUT = 0.146
 NUM_WORKERS = int(os.environ.get("HANDCHAR_NUM_WORKERS", 0))  # Windows 默认 0; Linux 可设 8
 PIN_MEMORY = DEVICE.type == "cuda"
 torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True  # 锁定确定性: 同 seed 两次结果一致
 
 # 训练 epoch 集中管理 (大一统方案统一 20 epoch)
 TRAIN_EPOCHS = 20

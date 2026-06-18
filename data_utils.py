@@ -1,5 +1,6 @@
 """数据加载 + 预处理"""
 import csv
+import math
 import os
 import random
 
@@ -76,12 +77,85 @@ def load_split_data():
         file_name = os.path.basename(img_path)
         num = int(file_name.split('-')[1].split('.')[0])
         idx = l2i[label]
-        if num <= 50:
-            train_d.append((file_name, idx))  # 001-050 CV pool
+        if num <= 45:
+            train_d.append((file_name, idx))  # 001-045 train
+        elif num <= 50:
+            val_d.append((file_name, idx))    # 046-050 val (修 val 缺失导致拿 test 当 val 的泄漏)
         else:
             test_d.append((file_name, idx))   # 051-055 holdout
     _register_sensitive(l2i)
     return train_d, val_d, test_d, all_labels, l2i
+
+
+def load_all_data():
+    """加载全部 3410 张 (62 类 × 55 张), 不分 train/val/test. 用于 K-Fold CV."""
+    with open(f'{DATA_DIR}/english.csv') as f:
+        label_map = {r['image']: r['label'] for r in csv.DictReader(f)}
+    all_labels = sorted(set(label_map.values()))
+    l2i = {l: i for i, l in enumerate(all_labels)}
+    all_d = []
+    for img_path, label in label_map.items():
+        file_name = os.path.basename(img_path)
+        all_d.append((file_name, l2i[label]))
+    _register_sensitive(l2i)
+    return all_d, all_labels, l2i
+
+
+def load_holdout_data(writer_min=51):
+    """加载干净留出集 (默认写手 051-055). 与 load_kfold_splits(exclude_writer_min=51) 互补:
+    fold 模型只在写手 <51 上训练, 这里返回 >=writer_min 的样本, 二者无交集.
+
+    返回 (holdout_list, all_labels, l2i), holdout_list: [(file_name, label_idx), ...]
+    """
+    all_d, all_labels, l2i = load_all_data()
+    holdout = [(fn, lbl) for (fn, lbl) in all_d
+               if int(fn.split('-')[1].split('.')[0]) >= writer_min]
+    return holdout, all_labels, l2i
+
+
+def load_kfold_splits(n_splits=5, random_state=42, exclude_writer_min=None):
+    """StratifiedKFold 切分 3410 张全集, 每类 ~44 train / ~11 val.
+
+    自实现 (避免 sklearn / numpy 版本冲突): 对每类 55 张索引 RNG 打乱, 均分 n_splits 段,
+    fold k 取第 k 段为 val, 其余为 train. random_state=42 固定 → 5 fold 结果可复现.
+
+    返回 (folds, all_labels, l2i):
+      folds: List[(train_list, val_list)] 长度 n_splits
+      train_list / val_list: [(file_name, label_idx), ...]
+    """
+    all_d, all_labels, l2i = load_all_data()
+    # 干净留出: exclude_writer_min=51 时, 把写手编号 >=51 (即 051-055) 整块剔除出 CV 池,
+    # 使所有 fold 模型都没见过留出集 -> bagging 集成可在 051-055 上做无泄漏评估.
+    if exclude_writer_min is not None:
+        all_d = [(fn, lbl) for (fn, lbl) in all_d
+                 if int(fn.split('-')[1].split('.')[0]) < exclude_writer_min]
+    # 按类聚集索引
+    cls_to_idx = {}
+    for i, (_, lbl) in enumerate(all_d):
+        cls_to_idx.setdefault(lbl, []).append(i)
+
+    rng = np.random.RandomState(random_state)
+    # 每类内打乱, 然后按 numpy.array_split 均分 n_splits 段
+    cls_fold_idx = {}  # cls -> [val_idx_of_fold_0, val_idx_of_fold_1, ...]
+    for cls, idxs in cls_to_idx.items():
+        shuffled = list(idxs)
+        rng.shuffle(shuffled)
+        cls_fold_idx[cls] = np.array_split(shuffled, n_splits)
+
+    folds = []
+    for k in range(n_splits):
+        val_idx = []
+        train_idx = []
+        for cls, segments in cls_fold_idx.items():
+            for j, seg in enumerate(segments):
+                if j == k:
+                    val_idx.extend(seg.tolist())
+                else:
+                    train_idx.extend(seg.tolist())
+        tr = [all_d[i] for i in train_idx]
+        val = [all_d[i] for i in val_idx]
+        folds.append((tr, val))
+    return folds, all_labels, l2i
 
 
 class Augment:
@@ -146,6 +220,24 @@ class Augment:
                     sub = -functional.max_pool2d(-sub, 3, 1, 1)
                     sub = functional.max_pool2d(sub, 3, 1, 1)
                 batch[applicable] = sub
+
+        # Random Erasing (p=0.5): 矩形遮罩面积 2%-15%, 填 0 (纸色). 强迫不依赖具体像素块.
+        # 跳过 erase_big 敏感类 (il1.) — 单笔画/小点, 大遮罩易直接消失
+        erase_mask = torch.rand(batch_size, device=device) < 0.5
+        erase_applicable = erase_mask & ~sensitive_mask('erase_big')
+        if erase_applicable.any():
+            img_area = height * width
+            for i in torch.nonzero(erase_applicable, as_tuple=False).flatten().tolist():
+                # 随机面积 2-15%, 长宽比 0.3-3.3 (torchvision RandomErasing 默认范围)
+                area = img_area * random.uniform(0.02, 0.15)
+                ratio = math.exp(random.uniform(math.log(0.3), math.log(3.3)))
+                eh = int(round(math.sqrt(area * ratio)))
+                ew = int(round(math.sqrt(area / ratio)))
+                if eh < 1 or ew < 1 or eh >= height or ew >= width:
+                    continue
+                y0 = random.randint(0, height - eh)
+                x0 = random.randint(0, width - ew)
+                batch[i, :, y0:y0 + eh, x0:x0 + ew] = 0.0
         return batch
 
 
@@ -165,13 +257,32 @@ class CharDataset(Dataset):
         return self.images[i].clone(), self.labels[i]
 
 
+MIXUP_ALPHA = 0.2
+MIXUP_PROB = 0.5
+
+
 def collate_with_augment(batch):
-    """collate_fn: 拼 batch 后批量增强, GPU 一次处理 64 张图"""
+    """collate_fn: 拼 batch → 批量增强 → 50% 概率走 MixUp.
+
+    输出 4 元组 (images, y_a, y_b, lam):
+      - 未触发 MixUp: y_b == y_a, lam = 1.0 → 训练循环统一用 lam*focal(y_a) + (1-lam)*focal(y_b)
+      - 触发: lam ~ Beta(α, α), images = lam*x + (1-lam)*x[perm], y_b = labels[perm]
+    """
     images, labels = zip(*batch)
     images = torch.stack(images)  # [B, 1, H, W]
     labels = torch.tensor(labels)
     images = Augment.apply_batch(images, labels)
-    return images, labels
+
+    if random.random() < MIXUP_PROB:
+        lam = float(np.random.beta(MIXUP_ALPHA, MIXUP_ALPHA))
+        # Beta(0.2,0.2) 极端化, 强制 lam 偏向 0/1 — 多数 batch 主导一边, 少数真混合
+        perm = torch.randperm(images.size(0))
+        images = lam * images + (1.0 - lam) * images[perm]
+        y_b = labels[perm]
+    else:
+        lam = 1.0
+        y_b = labels
+    return images, labels, y_b, lam
 
 
 def make_loaders(train_d, val_d=None, test_d=None, size=(48, 64), batch=32):
