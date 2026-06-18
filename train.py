@@ -162,7 +162,7 @@ def _make_optimizer(net, base_lr, args):
                  lr=base_lr, weight_decay=5e-4)
 
 
-def train_one_fold(fold_idx, train_data, val_data, args, i2l):
+def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
     """单 fold 训练: 复用 MixUp collate + EMA dual-path + cosine LR."""
     train_ds = CharDataset(train_data, train=True)
     val_ds = CharDataset(val_data, train=False)
@@ -274,7 +274,7 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l):
                 # 取 y_a 为主目标 (MixUp 时 y_a 权重≥0.5)
                 loss_res, res_terms = residual_loss(
                     logits_shape, main_logits, main_logits - logits_shape, y_a,
-                    confusable_pairs_idx=_pair_idx,
+                    confusable_pairs_idx=pair_idx,
                     lambda_sparse=args.sparse_lambda, lambda_diff=args.diff_lambda)
                 loss = loss_main + loss_res
                 decoder_out = None
@@ -420,7 +420,7 @@ def main():
                         help="余弦头/间隔的缩放 scale (默认 30)")
     parser.add_argument("--ecoc_length", type=int, default=127,
                         help="ECOC 头码字长度 (head=ecoc 时; 评估须与训练一致, 建议保持默认)")
-    parser.add_argument("--recon_lambda", type=float, default=0.0,
+    parser.add_argument("--sparse_lambda", type=float, default=1e-4,
                         help="disentangled: L1(Δ) 稀疏惩罚权重 (默认 1e-4)")
     parser.add_argument("--diff_lambda", type=float, default=0.1,
                         help="disentangled: 歧义对 Δ 差异鼓励权重 (默认 0.1)")
@@ -476,10 +476,10 @@ def main():
 
     os.makedirs("output", exist_ok=True)
     exclude_min = 51 if args.holdout_test else None
-    # 歧义对索引 (供 disentangled 残差损失用)
-    _pair_idx = [(l2i[a], l2i[b]) for a, b in CONFUSABLE_PAIRS if a in l2i and b in l2i]
     folds, all_labels, l2i = load_kfold_splits(
         n_splits=args.n_folds, random_state=args.seed, exclude_writer_min=exclude_min)
+    # 歧义对索引 (供 disentangled 残差损失用)
+    _pair_idx = [(l2i[a], l2i[b]) for a, b in CONFUSABLE_PAIRS if a in l2i and b in l2i]
     i2l = {v: k for k, v in l2i.items()}
 
     # 报模型规格 (用 fold 0 临时建一个数 params)
@@ -519,7 +519,7 @@ def main():
             continue
         print("\n[Fold %d/%d] train=%d val=%d" % (fold_idx, args.n_folds, len(tr), len(val)))
         _t_fold = time.time()
-        best_state, val_acc, pair_acc, snapshots = train_one_fold(fold_idx, tr, val, args, i2l)
+        best_state, val_acc, pair_acc, snapshots = train_one_fold(fold_idx, tr, val, args, i2l, _pair_idx)
         ckpt_path = "output/%s_cv%d_f%d_%s.pth" % (args.arch, args.n_folds, fold_idx, timestamp)
         torch.save(best_state, ckpt_path)
         for si, snap in enumerate(snapshots):
@@ -533,7 +533,7 @@ def main():
         _done = len(fold_times)
         _remain = n_run - _done
         _avg = sum(fold_times) / _done
-        print("  ⏱ 本折 %.1f min | 已用 %.1f min | 预计还需 ~%.1f min (剩 %d 折)" % (
+        print("  [T] fold time %.1f min | elapsed %.1f min | ETA ~%.1f min (%d folds left)" % (
             fold_times[-1] / 60, sum(fold_times) / 60, _avg * _remain / 60, _remain))
         for k, v in pair_acc.items():
             pair_accum.setdefault(k, []).append(v)

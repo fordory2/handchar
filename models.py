@@ -1335,6 +1335,13 @@ class DisentangledNet(nn.Module):
                 "ViT/DINOv2 not supported, use CNN (convnextv2_femto/efficientnet/resnet). "
                 "Error: %s" % str(e)) from e
 
+        # 预处理: 灰度→3ch + resize + ImageNet 归一化
+        self.input_size = input_size
+        imagenet_mean = (0.485, 0.456, 0.406)
+        imagenet_std = (0.229, 0.224, 0.225)
+        self.register_buffer('_mean', torch.tensor(imagenet_mean).view(1, 3, 1, 1))
+        self.register_buffer('_std', torch.tensor(imagenet_std).view(1, 3, 1, 1))
+
         # 取各 stage 输出通道数 (一次假前向)
         dummy = torch.randn(1, in_chans, input_size, input_size)
         with torch.no_grad():
@@ -1369,6 +1376,14 @@ class DisentangledNet(nn.Module):
         self.residual_scale = nn.Parameter(torch.zeros(1))  # 0-init: 初始 Δ=0
 
     def forward(self, x):
+        # 预处理: resize → 灰度1→3ch → ImageNet 归一化
+        if x.shape[-2] != self.input_size or x.shape[-1] != self.input_size:
+            x = torch.nn.functional.interpolate(x, size=(self.input_size, self.input_size),
+                                                mode='bilinear', align_corners=False)
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+        x = (x - self._mean) / self._std
+
         feats = self.backbone(x)  # [s1,s2,s3,s4]
 
         # Stream S: 形状
@@ -1392,18 +1407,20 @@ class DisentangledNet(nn.Module):
         return logits_final, fused, logits_shape
 
     # ---- 判别式LR / 冻结接口 (复用 _TransferCommon 的规范) ----
-    def param_groups(self, base_lr, backbone_lr_mult=0.1):
+    def param_groups(self, base_lr, backbone_lr_mult=0.1, weight_decay=5e-4):
         backbone_ids = set(id(p) for p in self.backbone.parameters())
         backbone_p, head_p = [], []
         for p in self.parameters():
-            if id(p) in backbone_ids:
-                backbone_p.append(p)
-            else:
-                head_p.append(p)
-        return [
-            {'params': backbone_p, 'lr': base_lr * backbone_lr_mult},
-            {'params': head_p, 'lr': base_lr},
+            if not p.requires_grad:
+                continue
+            (backbone_p if id(p) in backbone_ids else head_p).append(p)
+        groups = [
+            {'params': head_p, 'lr': base_lr, 'weight_decay': weight_decay},
         ]
+        if backbone_p:
+            groups.append({'params': backbone_p, 'lr': base_lr * backbone_lr_mult,
+                           'weight_decay': weight_decay})
+        return groups
 
     def freeze_backbone(self):
         for p in self.backbone.parameters():
