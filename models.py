@@ -1309,8 +1309,8 @@ class ResNet50UNetChar(nn.Module):
 # 形状流(GAP, 刻意尺寸盲) + 结构流(多尺度GeM, 尺寸敏感) → 残差 logits
 # logits_final = logits_shape + Δ,  Δ L1 稀疏 → 只在歧义对上非零
 
-class GeometricProductFusion(nn.Module):
-    """Clifford geometric product fusion: ab ~ a.b + a^b (low-rank projection).
+class GeometricAlgebraFusion(nn.Module):
+    """Geometric Algebra fusion: ab ~ a.b + a^b (low-rank projection).
 
     Replaces concat: concat captures only first-order independent contributions,
     while geometric product captures the full second-order interaction between
@@ -1397,8 +1397,8 @@ class DisentangledNet(nn.Module):
         )
 
         # --- 残差融合 ---
-        self.gp_fusion = GeometricProductFusion(shape_dim, geo_dim, bivector_dim=64)
-        fusion_in_dim = self.gp_fusion.out_dim  # 449 vs concat 的 384
+        self.ga_fusion = GeometricAlgebraFusion(shape_dim, geo_dim, bivector_dim=64)
+        fusion_in_dim = self.ga_fusion.out_dim  # 449 vs concat 的 384
         self.residual_fc = nn.Sequential(
             nn.Linear(fusion_in_dim, 128),
             nn.LayerNorm(128),
@@ -1431,7 +1431,7 @@ class DisentangledNet(nn.Module):
         f_geo = self.geo_proj(torch.cat(geo_parts, 1)) # [B, geo_dim]
 
         # 残差修正 — Geometric Product Fusion
-        fused = self.gp_fusion(f_shape, f_geo)         # ab ≈ a·b + a∧b, 替代 concat
+        fused = self.ga_fusion(f_shape, f_geo)         # ab ≈ a·b + a∧b, 替代 concat
         Delta = self.residual_scale * self.residual_fc(fused)  # [B, 62]
         logits_final = logits_shape + Delta
 
