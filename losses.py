@@ -84,40 +84,47 @@ class FocalLoss:
 
 def residual_loss(logits_shape, logits_final, Delta, targets,
                   confusable_pairs_idx=None,
-                  lambda_sparse=1e-4, lambda_diff=0.1, diff_tau=0.01):
-    """残差损失: CE(shape) + CE(final) + λ₁|Δ|₁ + λ_diff·L_diff.
+                  lambda_sparse=1e-4, lambda_diff=0.1, lambda_cons=1.0, diff_tau=0.01):
+    """Residual regularization: MSE consistency (shape->final) + L_diff.
 
-    设计原理 (ResNet 残差哲学的损失函数版):
-      - logits_shape 走 GAP → 对尺寸/位移不变, C/c 天然模糊
-      - Δ 来自多尺度结构信息, 只在形状不够时修补
-      - L1 惩罚 → Δ 在 50 个非歧义类上自动 →0 (稀疏)
-      - L_diff → 歧义对上 Δ 有区分力 (不会退化到 Δ==常数)
+    Design:
+      - logits_final = shape + Delta carries the sole classification signal (FocalLoss)
+      - Shape stream aligns to final via class-conditional MSE (same direction, no conflict)
+      - Confusable pairs (C/c,O/o,...): relaxed consistency (0.1), allowing Delta to contribute
+      - L_diff: encourages Delta differentiation between confusable pairs
 
     Args:
-        logits_shape: [B,62] 形状流 logits (恒等路径)
-        logits_final: [B,62] 修正后 logits = logits_shape + Δ
-        Delta:        [B,62] 残差修正量 (用于 L1 和 L_diff)
-        targets:      [B]    真类索引
-        confusable_pairs_idx: list of (i,j) 歧义对索引
-        lambda_sparse: L1(Δ) 权重, 默认 1e-4 (需调: 太大会压死 Δ, 太小无稀疏效果)
-        lambda_diff:   L_diff 权重, 默认 0.1
-        diff_tau:      歧义对 Δ 差异的最小期望阈值 (平方差 < τ 就罚)
+        logits_shape: [B,62] shape stream logits
+        logits_final: [B,62] fused logits = shape + Delta
+        Delta:        [B,62] residual correction (for L_diff)
+        targets:      [B]    true class index (for confusable pair masks in L_diff)
+        confusable_pairs_idx: list of (i,j)
+        lambda_sparse: L1(Delta) weight, default 1e-4 (recommend 0)
+        lambda_diff:   L_diff weight, default 0.1
+        lambda_cons:   MSE consistency weight, default 1.0
+        diff_tau:      min expected squared-diff threshold for Delta pairs
 
     Returns:
         scalar loss, dict of per-term values (for logging)
     """
-    import torch.nn as nn
-    ce = nn.CrossEntropyLoss()
-    L_shape = ce(logits_shape, targets)
-    L_final = ce(logits_final, targets)
-    # 类条件稀疏: 歧义对类 L1 权重 0.1, 其余 1.0
-    # → 非歧义类强压 Δ→0, 歧义类允许 Δ≠0 (消除 g₃ 与 g₁/g₄ 的梯度对抗)
-    cw = torch.ones(Delta.shape[1], device=Delta.device)
+    # Class-conditional weights: non-confusable=1.0, confusable=0.1
+    cw_cons = torch.ones(Delta.shape[1], device=Delta.device)
     if confusable_pairs_idx:
         for i, j in confusable_pairs_idx:
-            cw[i] = cw[j] = 0.1
-    L_sparse = (Delta.abs() * cw).mean()
+            cw_cons[i] = cw_cons[j] = 0.1
 
+    # ---- MSE Consistency: shape follows final (final detached, no grad flow back) ----
+    sq_diff = (logits_shape - logits_final.detach()).pow(2)
+    L_cons = (sq_diff * cw_cons.unsqueeze(0)).mean()
+
+    # ---- Sparse regularization (default off via lambda_sparse=0) ----
+    cw_sp = torch.ones(Delta.shape[1], device=Delta.device)
+    if confusable_pairs_idx:
+        for i, j in confusable_pairs_idx:
+            cw_sp[i] = cw_sp[j] = 0.1
+    L_sparse = (Delta.abs() * cw_sp).mean()
+
+    # ---- Confusable pair Delta discrimination ----
     L_diff = torch.tensor(0.0, device=Delta.device)
     if confusable_pairs_idx and lambda_diff > 0:
         diffs = []
@@ -125,18 +132,17 @@ def residual_loss(logits_shape, logits_final, Delta, targets,
             mask_i = (targets == i)
             mask_j = (targets == j)
             if mask_i.any() and mask_j.any():
-                delta_i = Delta[mask_i].mean(0)  # [62]
-                delta_j = Delta[mask_j].mean(0)  # [62]
+                delta_i = Delta[mask_i].mean(0)
+                delta_j = Delta[mask_j].mean(0)
                 sq_dist = (delta_i - delta_j).pow(2).mean()
                 diffs.append(torch.relu(diff_tau - sq_dist))
         if diffs:
             L_diff = torch.stack(diffs).mean()
 
-    total = L_shape + L_final + lambda_sparse * L_sparse + lambda_diff * L_diff
+    total = lambda_cons * L_cons + lambda_sparse * L_sparse + lambda_diff * L_diff
 
     terms = {
-        'L_shape': L_shape.item(),
-        'L_final': L_final.item(),
+        'L_cons': L_cons.item(),
         'L_sparse': L_sparse.item(),
         'L_diff': L_diff.item(),
         'total': total.item(),
