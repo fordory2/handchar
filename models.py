@@ -1309,6 +1309,100 @@ class ResNet50UNetChar(nn.Module):
 # 形状流(GAP, 刻意尺寸盲) + 结构流(多尺度GeM, 尺寸敏感) → 残差 logits
 # logits_final = logits_shape + Δ,  Δ L1 稀疏 → 只在歧义对上非零
 
+
+
+class TinyResNet(nn.Module):
+    """Ultra-light standard 3x3 conv backbone (~0.50M params) for binary handwritten chars.
+
+    stem (7x7->64, /4) + 2x BasicBlock(64) + 2x reduction blocks -> 4 feature stages.
+    No depthwise conv, no SE — dense 3x3 kernels naturally capture stroke co-occurrence
+    in sparse binary images where DW conv isolates per-channel signals.
+
+    Features:
+      s0: stem output        [B, 64,  56, 56]   raw edge/gradient
+      s1: block0 output      [B, 64,  56, 56]   stroke fragments
+      s2: reduction1 output  [B, 128, 28, 28]   local stroke shapes
+      s3: reduction2 output  [B, 256, 14, 14]   character-level shape
+    """
+    def __init__(self, pretrained=True):
+        super().__init__()
+        # Stem
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.MaxPool2d(3, stride=2, padding=1),
+        )
+        # Layer1: 2x BasicBlock(64->64, stride 1)
+        self.block0 = self._block(64, 64, 1)
+        self.block1 = self._block(64, 64, 1)
+        # Reductions
+        self.reduction1 = self._block(64, 128, 2)
+        self.reduction2 = self._block(128, 256, 2)
+
+        if pretrained:
+            self._load_pretrained()
+
+    def _block(self, in_c, out_c, stride):
+        downsample = None
+        if stride != 1 or in_c != out_c:
+            downsample = nn.Sequential(
+                nn.Conv2d(in_c, out_c, 1, stride, bias=False),
+                nn.BatchNorm2d(out_c),
+            )
+        layers = [
+            nn.Conv2d(in_c, out_c, 3, stride, padding=1, bias=False),
+            nn.BatchNorm2d(out_c), nn.ReLU(inplace=True),
+            nn.Conv2d(out_c, out_c, 3, 1, padding=1, bias=False),
+            nn.BatchNorm2d(out_c),
+        ]
+        return _BasicBlock(nn.Sequential(*layers), downsample, nn.ReLU(inplace=True))
+
+    def _load_pretrained(self):
+        try:
+            from torchvision.models import resnet18, ResNet18_Weights
+            src = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+        except Exception:
+            return
+        # stem
+        self.stem[0].load_state_dict(src.conv1.state_dict())
+        self.stem[1].load_state_dict(src.bn1.state_dict())
+        # block0 = layer1[0], block1 = layer1[1]
+        _copy_block(self.block0, src.layer1[0])
+        _copy_block(self.block1, src.layer1[1])
+        # reduction1 = layer2[0] (64->128, stride 2)
+        _copy_block(self.reduction1, src.layer2[0])
+        # reduction2: only copy first conv from layer2[1] (128->128 stride 1), rest random
+        self.reduction2.conv[0].load_state_dict(
+            {k: v for k, v in src.layer2[1].conv1.state_dict().items()})
+        del src
+
+    def forward(self, x):
+        s0 = self.stem(x)        # [B, 64,  56, 56]
+        s1 = self.block0(s0)     # [B, 64,  56, 56]
+        s2 = self.reduction1(s1) # [B, 128, 28, 28]
+        s3 = self.reduction2(s2) # [B, 256, 14, 14]
+        return [s0, s1, s2, s3]
+
+
+class _BasicBlock(nn.Module):
+    def __init__(self, conv, downsample, act):
+        super().__init__()
+        self.conv = conv
+        self.downsample = downsample
+        self.act = act
+    def forward(self, x):
+        identity = self.downsample(x) if self.downsample else x
+        return self.act(self.conv(x) + identity)
+
+
+def _copy_block(dst, src):
+    for i, (name, param) in enumerate(src.named_parameters()):
+        parts = name.split(".")
+        target = dst.conv
+        for p in parts[:-1]:
+            target = getattr(target, p)
+        getattr(target, parts[-1]).data.copy_(param.data)
+
 class GeometricAlgebraFusion(nn.Module):
     """Geometric Algebra fusion: ab ~ a.b + a^b (low-rank projection).
 
@@ -1349,17 +1443,21 @@ class DisentangledNet(nn.Module):
     def __init__(self, model_name='convnextv2_femto', num_classes=62, pretrained=True,
                  input_size=160, shape_dim=192, geo_dim=192, ista_steps=2):
         super().__init__()
-        import timm
         in_chans = 3
-        try:
-            self.backbone = timm.create_model(
-                model_name, pretrained=pretrained, in_chans=in_chans,
-                features_only=True, out_indices=(0, 1, 2, 3))
-        except Exception as e:
-            raise RuntimeError(
-                "DisentangledNet needs backbone with features_only. "
-                "ViT/DINOv2 not supported, use CNN (convnextv2_femto/efficientnet/resnet). "
-                "Error: %s" % str(e)) from e
+        if model_name in ('tinyresnet', 'tinyresnet_scratch'):
+            # Standard 3x3 conv backbone (~0.50M), optional ImageNet pretrain
+            self.backbone = TinyResNet(pretrained=(model_name == 'tinyresnet'))
+        else:
+            import timm
+            try:
+                self.backbone = timm.create_model(
+                    model_name, pretrained=pretrained, in_chans=in_chans,
+                    features_only=True, out_indices=(0, 1, 2, 3))
+            except Exception as e:
+                raise RuntimeError(
+                    "DisentangledNet needs backbone with features_only. "
+                    "Supported: mobilenetv4_conv_small, tinyresnet, tinyresnet_scratch, convnextv2_femto. "
+                    "Error: %s" % str(e)) from e
 
         # 预处理: 灰度→3ch + resize + ImageNet 归一化
         self.input_size = input_size
