@@ -110,7 +110,13 @@ def residual_loss(logits_shape, logits_final, Delta, targets,
     ce = nn.CrossEntropyLoss()
     L_shape = ce(logits_shape, targets)
     L_final = ce(logits_final, targets)
-    L_sparse = Delta.abs().mean()
+    # 类条件稀疏: 歧义对类 L1 权重 0.1, 其余 1.0
+    # → 非歧义类强压 Δ→0, 歧义类允许 Δ≠0 (消除 g₃ 与 g₁/g₄ 的梯度对抗)
+    cw = torch.ones(Delta.shape[1], device=Delta.device)
+    if confusable_pairs_idx:
+        for i, j in confusable_pairs_idx:
+            cw[i] = cw[j] = 0.1
+    L_sparse = (Delta.abs() * cw).mean()
 
     L_diff = torch.tensor(0.0, device=Delta.device)
     if confusable_pairs_idx and lambda_diff > 0:
