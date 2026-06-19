@@ -280,11 +280,10 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                 if args.sigreg_lambda > 0.0:
                     loss_res = loss_res + args.sigreg_lambda * sigreg_loss(
                         unified, n_projections=args.sigreg_proj)
-                # ── 梯度诊断: 量度 ||g_main||, ||g_res||, cos(g_main, g_res) ──
+                # ── 梯度诊断 / GME: 分别 backward ──
                 do_diag = args.grad_diag and (batch_count % args.grad_diag_interval == 0)
-                do_separate = args.gme or args.clifford_align or do_diag
+                do_separate = args.gme or do_diag
                 if do_separate:
-                    # 分别 backward, 可复用给 GME / clifford_align / 诊断
                     loss_main.backward(retain_graph=True)
                     grads_main = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
                                   for p in net.parameters()]
@@ -304,19 +303,13 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                               (batch_count, g_main_norm.item(), g_res_norm.item(),
                                cos_theta.item(), g_main_norm.item() / (g_res_norm.item() + 1e-8),
                                g_comb_norm.item()), flush=True)
-                    # GME: 梯度幅值均衡 (cos>0 时方向不变, 仅校准幅值)
+                    # GME: 梯度幅值均衡
                     if args.gme:
                         hmean = 2.0 / (1.0 / (g_main_norm + 1e-8) + 1.0 / (g_res_norm + 1e-8))
                         g_main_eq = g_main_flat * (hmean / (g_main_norm + 1e-8))
                         g_res_eq  = g_res_flat  * (hmean / (g_res_norm  + 1e-8))
                         g_combined = g_main_eq + g_res_eq
-                    # clifford_align: 方向对齐 (cos<0 时 rotor 旋转, cos≥0 时不干预)
-                    elif args.clifford_align:
-                        from losses import clifford_align
-                        g_main_al, g_res_al = clifford_align(g_main_flat, g_res_flat)
-                        g_combined = g_main_al + g_res_al
                     else:
-                        # 诊断模式: 仅观察, 不修改梯度
                         g_combined = g_main_flat + g_res_flat
                     optimizer.zero_grad()
                     offset = 0
@@ -476,8 +469,6 @@ def main():
                         help="disentangled: L1(Δ) 稀疏惩罚权重 (默认 1e-4)")
     parser.add_argument("--diff_lambda", type=float, default=0.1,
                         help="disentangled: 歧义对 Δ 差异鼓励权重 (默认 0.1)")
-    parser.add_argument("--clifford_align", action="store_true",
-                        help="disentangled: 用 Clifford rotor 对称对齐 loss_main/loss_res 梯度 (消解冲突)")
     parser.add_argument("--gme", action="store_true",
                         help="disentangled: 梯度幅值均衡——单位方向+调和平均步长 (消解幅值失衡)")
     parser.add_argument("--grad_diag", action="store_true",

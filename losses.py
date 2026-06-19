@@ -144,43 +144,6 @@ def residual_loss(logits_shape, logits_final, Delta, targets,
     return total, terms
 
 
-def clifford_align(g1, g2):
-    """Clifford rotor 模拟: 对称对齐两个冲突梯度, 保留模长, 各让半步.
-
-    CliffordNet 的 geometric product ab = a·b + a∧b 在此模拟为:
-      - a·b → cos(θ): 标量冲突度 (正=无冲突, 负=冲突)
-      - a∧b  → 由 Gram-Schmidt 正交基定义的冲突平面
-      - rotor → 在冲突平面上各转 θ/4, 中线相遇
-
-    PCGrad 只改 g1 不动 g2 (不对称). 此函数两方对称修正.
-    """
-    g1_n = g1 / (g1.norm() + 1e-8)
-    g2_n = g2 / (g2.norm() + 1e-8)
-    cos_theta = (g1_n * g2_n).sum()
-
-    if cos_theta >= 0:               # 无冲突, 不干预
-        return g1, g2
-
-    # Gram-Schmidt 构造冲突平面正交基 {u, v}
-    u = g1_n
-    v = g2_n - cos_theta * u
-    v = v / (v.norm() + 1e-8)
-
-    theta = torch.acos(cos_theta.clamp(-1, 1))
-    angle = theta / 4                  # 各让 θ/4, 总和 θ/2 → 中线相遇
-    sin_a, cos_a = torch.sin(angle), torch.cos(angle)
-
-    # g1 = |g1|·u → 转 +angle: |g1|·(cos_a·u + sin_a·v)
-    g1_new = g1.norm() * (cos_a * u + sin_a * v)
-    # g2 = |g2|·(cosθ·u + sinθ·v) → 转 -angle: |g2|·(cos(θ-angle)·u + sin(θ-angle)·v)
-    sin_t = torch.sqrt(1 - cos_theta ** 2 + 1e-8)
-    cos_new = cos_theta * cos_a + sin_t * sin_a   # cos(θ - angle)
-    sin_new = sin_t * cos_a - cos_theta * sin_a    # sin(θ - angle)
-    g2_new = g2.norm() * (cos_new * u + sin_new * v)
-
-    return g1_new, g2_new
-
-
 def sigreg_loss(features, n_projections=1024, num_points=17, t_max=2.0):
     """SIGReg (Sketched Isotropic Gaussian Regularization, LeJEPA arXiv:2511.08544).
 
