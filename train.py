@@ -523,6 +523,10 @@ def main():
         print("\n[Fold %d/%d] train=%d val=%d" % (fold_idx, args.n_folds, len(tr), len(val)))
         _t_fold = time.time()
         best_state, val_acc, pair_acc, snapshots = train_one_fold(fold_idx, tr, val, args, i2l, _pair_idx)
+        # 注入元信息供 evaluate_cv.py / ensemble.py 重建正确架构
+        if args.arch == "disentangled":
+            best_state["_arch_meta"] = {"model_name": args.transfer_model,
+                                         "input_size": args.transfer_input}
         ckpt_path = "output/%s_cv%d_f%d_%s.pth" % (args.arch, args.n_folds, fold_idx, timestamp)
         torch.save(best_state, ckpt_path)
         for si, snap in enumerate(snapshots):

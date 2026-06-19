@@ -65,8 +65,11 @@ def _build_net(state, arch):
         net.eval()
         return net
     if arch == "disentangled":
-        net = DisentangledNet(model_name="convnextv2_femto", num_classes=NUM_CLASSES,
-                              pretrained=False, input_size=160).to(DEVICE)
+        meta = state.pop("_arch_meta", {})
+        model_name = meta.get("model_name", "convnextv2_femto")
+        input_size = meta.get("input_size", 160)
+        net = DisentangledNet(model_name=model_name, num_classes=NUM_CLASSES,
+                              pretrained=False, input_size=input_size).to(DEVICE)
         net.load_state_dict(state, strict=False); net.eval(); return net
     if arch == "convnextv2p":
         net = ConvNeXtV2Char(num_classes=NUM_CLASSES, pretrained=False).to(DEVICE)
