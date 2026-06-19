@@ -269,7 +269,7 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
             out = net(images)
             if args.arch == "disentangled":
                 main_logits, unified, logits_shape = out
-                from losses import residual_loss, clifford_align
+                from losses import residual_loss
                 loss_main = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
                 loss_res, res_terms = residual_loss(
                     logits_shape, main_logits, main_logits - logits_shape, y_a,
@@ -279,24 +279,29 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                 if args.sigreg_lambda > 0.0:
                     loss_res = loss_res + args.sigreg_lambda * sigreg_loss(
                         unified, n_projections=args.sigreg_proj)
-                # ── clifford_align: 分别 backward, rotor 对称对齐后求和 ──
-                loss_main.backward(retain_graph=True)
-                grads_main = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
-                              for p in net.parameters()]
-                optimizer.zero_grad()
-                loss_res.backward()
-                grads_res = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
-                             for p in net.parameters()]
-                g_main_flat = torch.cat([g.flatten() for g in grads_main])
-                g_res_flat = torch.cat([g.flatten() for g in grads_res])
-                g_main_aligned, g_res_aligned = clifford_align(g_main_flat, g_res_flat)
-                optimizer.zero_grad()
-                offset = 0
-                for p in net.parameters():
-                    n = p.numel()
-                    p.grad = (g_main_aligned[offset:offset + n].view_as(p) +
-                              g_res_aligned[offset:offset + n].view_as(p)).clone()
-                    offset += n
+                if args.clifford_align:
+                    # ── clifford_align: 分别 backward, rotor 对称对齐后求和 ──
+                    from losses import clifford_align
+                    loss_main.backward(retain_graph=True)
+                    grads_main = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
+                                  for p in net.parameters()]
+                    optimizer.zero_grad()
+                    loss_res.backward()
+                    grads_res = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
+                                 for p in net.parameters()]
+                    g_main_flat = torch.cat([g.flatten() for g in grads_main])
+                    g_res_flat = torch.cat([g.flatten() for g in grads_res])
+                    g_main_aligned, g_res_aligned = clifford_align(g_main_flat, g_res_flat)
+                    optimizer.zero_grad()
+                    offset = 0
+                    for p in net.parameters():
+                        n = p.numel()
+                        p.grad = (g_main_aligned[offset:offset + n].view_as(p) +
+                                  g_res_aligned[offset:offset + n].view_as(p)).clone()
+                        offset += n
+                else:
+                    loss = loss_main + loss_res
+                    loss.backward()
                 loss = loss_main + loss_res  # 仅用于日志
                 decoder_out = None
             else:
@@ -445,6 +450,8 @@ def main():
                         help="disentangled: L1(Δ) 稀疏惩罚权重 (默认 1e-4)")
     parser.add_argument("--diff_lambda", type=float, default=0.1,
                         help="disentangled: 歧义对 Δ 差异鼓励权重 (默认 0.1)")
+    parser.add_argument("--clifford_align", action="store_true",
+                        help="disentangled: 用 Clifford rotor 对称对齐 loss_main/loss_res 梯度 (消解冲突)")
     parser.add_argument("--shape_dim", type=int, default=192,
                         help="disentangled: 形状流特征维度 (默认 192)")
     parser.add_argument("--geo_dim", type=int, default=192,
