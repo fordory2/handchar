@@ -1,0 +1,340 @@
+<mxfile host="claude" modified="2026-06-19T00:00:00.000Z" agent="claude" version="21.0.0">
+  <diagram name="DisentangledNet 架构" id="arch_main">
+    <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ============================================================ -->
+        <!-- 输入 -->
+        <!-- ============================================================ -->
+        <mxCell id="ipt" value="Input&lt;br&gt;[B, 1, 48, 64]&lt;br&gt;灰度手写字符" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="680" y="20" width="140" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Preprocess -->
+        <mxCell id="prp" value="Preprocess&lt;br&gt;resize → gray→RGB → ImageNet norm" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57F17;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="640" y="90" width="220" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_in_pre" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="ipt" target="prp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================================================ -->
+        <!-- Backbone -->
+        <!-- ============================================================ -->
+        <mxCell id="bb" value="MobileNetV4 conv_small (~1.26M)&lt;br&gt;features_only (0,1,2,3)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#283593;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="150" width="220" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pr_bb" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="prp" target="bb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Stage outputs -->
+        <mxCell id="s0" value="s0 [32, 56, 112]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C5CAE9;strokeColor=#283593;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="120" y="220" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="s1" value="s1 [48, 28, 56]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C5CAE9;strokeColor=#283593;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="310" y="220" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="s2 [64, 14, 28]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C5CAE9;strokeColor=#283593;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="500" y="220" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="s3 [128, 7, 14]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C5CAE9;strokeColor=#283593;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="220" width="100" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Backbone → stage edges -->
+        <mxCell id="e_bb_s0" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.1;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="bb" target="s0">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bb_s1" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.35;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="bb" target="s1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bb_s2" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.6;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="bb" target="s2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bb_s3" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.85;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="bb" target="s3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================================================ -->
+        <!-- Stream S — 形状流 (恒等路径) -->
+        <!-- ============================================================ -->
+        <mxCell id="box_s" value="Stream S — 形状流（恒等路径）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=11;fontStyle=1;dashed=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="610" y="270" width="280" height="280" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s3_dup_s" value="s3 [128, 7, 14] ← 仅用最深 stage" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="650" y="300" width="200" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s3_s" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="s3" target="s3_dup_s">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- GeMPool S -->
+        <mxCell id="gem_s" value="GeMPool(p=3.0)&lt;br&gt;(mean(x^p))^(1/p)&lt;br&gt;━━━━━━━━━━━━&lt;br&gt;• p=1→GAP (均匀)&lt;br&gt;• p=3→偏强响应区域&lt;br&gt;• p 可学, clamp≥1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57F17;fontSize=9;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="650" y="340" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s3_gems" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="s3_dup_s" target="gem_s">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sh_proj" value="Linear(128,192)→LN→GELU" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="650" y="415" width="200" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gems_shp" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="gem_s" target="sh_proj">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sh_head" value="Linear(192,62)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="650" y="455" width="200" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="e_shp_sh" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="sh_proj" target="sh_head">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="logits_s" value="logits_shape [B, 62]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#A5D6A7;strokeColor=#1B5E20;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="660" y="495" width="180" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sh_logs" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="sh_head" target="logits_s">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================================================ -->
+        <!-- Stream G — 几何流 (残差路径) -->
+        <!-- ============================================================ -->
+        <mxCell id="box_g" value="Stream G — 几何流（残差路径）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=11;fontStyle=1;dashed=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="270" width="520" height="430" as="geometry" />
+        </mxCell>
+
+        <!-- ChannelISTA ×4 -->
+        <mxCell id="ista_box" value="ChannelISTA ×4（每 stage 独立, K=2 步 ISTA unrolling）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="300" width="440" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s0_ista" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s0" target="ista_box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s1_ista" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s1" target="ista_box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s2_ista" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s2" target="ista_box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s3_ista" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s3" target="ista_box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ISTA detail box -->
+        <mxCell id="ista_det" value="ISTA 迭代细节 (每 stage 独立参数):&lt;br&gt;━━━━━━━━━━━━━━━━━━━━━━━&lt;br&gt;z₀ = mean(x, dim=[H,W])          ← 通道描述子&lt;br&gt;for k in 0..K-1:&lt;br&gt;  h = SiLU(W_e[k]·z_k)            ← 过完备投影→非线性&lt;br&gt;  r = W_s[k]·h                  ← 稀疏重建&lt;br&gt;  z_{k+1} = S_θ(z_k + r)          ← 软阈值: sign·relu(|x|-θ)&lt;br&gt;scale = tanh(z_K − z₀)·0.5+0.5  ← 归一化到 [0,1]&lt;br&gt;out = x × scale                  ← 通道重标定" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F57F17;fontSize=9;align=left;spacingLeft=8;fontFamily=Courier New;" vertex="1" parent="1">
+          <mxGeometry x="80" y="340" width="440" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ista_det" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="ista_box" target="ista_det">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- GeMPool ×4 -->
+        <mxCell id="gem_g_box" value="GeMPool(p=3.0) ×4" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57F17;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="140" y="470" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ista_gem" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="ista_det" target="gem_g_box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- GeM outputs -->
+        <mxCell id="gem_out" value="s0→[32]    s1→[48]    s2→[64]    s3→[128]&lt;br&gt;                   ↓ concat&lt;br&gt;           [B, 32+48+64+128] = [B, 272]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57F17;fontSize=9;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="510" width="380" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gem_out" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="gem_g_box" target="gem_out">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="geo_proj" value="Linear(272,192)→LayerNorm→GELU" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="140" y="565" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gem_gp" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="gem_out" target="geo_proj">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="f_geo" value="f_geo [B, 192]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCC80;strokeColor=#E65100;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="605" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gp_fgeo" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="geo_proj" target="f_geo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================================================ -->
+        <!-- Fusion -->
+        <!-- ============================================================ -->
+        <mxCell id="box_fuse" value="残差融合" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=11;fontStyle=1;dashed=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="140" y="720" width="900" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- f_shape and f_geo to fusion -->
+        <mxCell id="f_shape_lbl" value="f_shape [B,192]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#A5D6A7;strokeColor=#1B5E20;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="750" width="140" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="f_geo_lbl" value="f_geo [B,192]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCC80;strokeColor=#E65100;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="750" width="140" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Connect shape head output to f_shape_lbl -->
+        <mxCell id="e_sh_fsl" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="sh_proj" target="f_shape_lbl">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="750" y="700" />
+              <mxPoint x="270" y="700" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_fgeo_flbl" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="f_geo" target="f_geo_lbl">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Concat -->
+        <mxCell id="cat" value="Concat [B, 384]" style="rhombus;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#6A1B9A;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="540" y="745" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_fs_cat" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="f_shape_lbl" target="cat">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_fg_cat" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="f_geo_lbl" target="cat">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- residual_fc -->
+        <mxCell id="res_fc" value="residual_fc&lt;br&gt;Linear(384,128)→LN→GELU&lt;br&gt;→Linear(128,62)&lt;br&gt;× residual_scale (init=0)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="720" y="735" width="250" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cat_res" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="cat" target="res_fc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Delta -->
+        <mxCell id="delta" value="Delta [B, 62]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#4A148C;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="770" y="810" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e_res_delta" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;" edge="1" parent="1" source="res_fc" target="delta">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Final logits -->
+        <mxCell id="logits_f" value="logits_final = logits_shape + Delta&lt;br&gt;[B, 62]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#7E57C2;strokeColor=#311B92;fontColor=#FFFFFF;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="855" width="240" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ls_lf" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0;entryY=0.5;" edge="1" parent="1" source="logits_s" target="logits_f">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="750" y="700" />
+              <mxPoint x="300" y="873" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_delta_lf" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=1;entryY=0.5;" edge="1" parent="1" source="delta" target="logits_f">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================================================ -->
+        <!-- Losses -->
+        <!-- ============================================================ -->
+        <mxCell id="box_loss" value="Losses" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;fontSize=11;fontStyle=1;dashed=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="140" y="940" width="900" height="160" as="geometry" />
+        </mxCell>
+
+        <!-- loss_main -->
+        <mxCell id="loss_m" value="① FocalLoss(logits_final, y)&lt;br&gt;   γ=2.0, smoothing=0.1&lt;br&gt;   ── loss_main" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="180" y="975" width="220" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e_lf_lm" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="logits_f" target="loss_m">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- residual_loss -->
+        <mxCell id="box_resl" value="residual_loss (losses.py)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="970" width="220" height="22" as="geometry" />
+        </mxCell>
+
+        <mxCell id="loss_s" value="② CE(logits_shape, y)&lt;br&gt;   ── L_shape" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="480" y="1000" width="160" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="loss_f" value="③ CE(logits_final, y)&lt;br&gt;   ── L_final" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="480" y="1045" width="160" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="loss_sp" value="④ λ₁|cw·Δ|₁ &lt;br&gt;   类条件权重 cw&lt;br&gt;   歧义类 0.1, 其余 1.0&lt;br&gt;   ── L_sparse" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="680" y="1000" width="200" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="loss_d" value="⑤ λ_d·L_diff(Δ, 歧义对)&lt;br&gt;   歧义对 Δ 均值差异鼓励&lt;br&gt;   τ=0.01, 默认 λ_d=0.1&lt;br&gt;   ── L_diff" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="680" y="1065" width="200" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Edges to residual_loss -->
+        <mxCell id="e_ls_rl" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;exitX=0;exitY=0.5;entryX=0.5;entryY=0;dashed=1;" edge="1" parent="1" source="logits_s" target="loss_s">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="510" />
+              <mxPoint x="300" y="700" />
+              <mxPoint x="560" y="700" />
+              <mxPoint x="560" y="1000" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ============================================================ -->
+        <!-- Legend -->
+        <!-- ============================================================ -->
+        <mxCell id="leg_title" value="图例" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="20" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1" value="Backbone" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#283593;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="50" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2" value="Stream S" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="80" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg3" value="Stream G" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="110" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg4" value="池化 (GeMPool)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57F17;fontSize=9;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="140" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg5" value="Fusion" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#6A1B9A;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="170" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg6" value="Loss" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="200" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg7" value="ChannelISTA" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F57F17;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="230" width="100" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- Pooling annotations (red callouts) -->
+        <mxCell id="pool_note1" value="池化 #1&lt;br&gt;GeMPool&lt;br&gt;↓ 强度感知&lt;br&gt;全局池化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="340" width="80" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pn1" style="edgeStyle=orthogonalEdgeStyle;endArrow=none;html=1;dashed=1;strokeColor=#F57F17;strokeWidth=2;" edge="1" parent="1" source="pool_note1" target="gem_s">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pool_note2" value="池化 #2&lt;br&gt;mean(H,W)&lt;br&gt;↓ 通道描述子&lt;br&gt;(ISTA 内部)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="530" y="355" width="80" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pn2" style="edgeStyle=orthogonalEdgeStyle;endArrow=none;html=1;dashed=1;strokeColor=#F57F17;strokeWidth=2;" edge="1" parent="1" source="pool_note2" target="ista_det">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pool_note3" value="池化 #3&lt;br&gt;GeMPool ×4&lt;br&gt;↓ 多尺度&lt;br&gt;强度池化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEB3B;strokeColor=#F57F17;fontSize=8;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="470" width="80" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pn3" style="edgeStyle=orthogonalEdgeStyle;endArrow=none;html=1;dashed=1;strokeColor=#F57F17;strokeWidth=2;" edge="1" parent="1" source="pool_note3" target="gem_g_box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Redundancy warning -->
+        <mxCell id="warn" value="⚠ 信号冗余&lt;br&gt;①②③ 三个 CE&lt;br&gt;同时作用在&lt;br&gt;62 维 logit 空间" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF8A80;strokeColor=#B71C1C;fontColor=#FFFFFF;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="280" width="120" height="65" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
