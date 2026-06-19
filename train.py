@@ -269,28 +269,48 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
             out = net(images)
             if args.arch == "disentangled":
                 main_logits, unified, logits_shape = out
-                # focal_crit 用 main_logits, 残差损失用 logits_shape
+                from losses import residual_loss, clifford_align
                 loss_main = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
-                from losses import residual_loss
-                # 取 y_a 为主目标 (MixUp 时 y_a 权重≥0.5)
                 loss_res, res_terms = residual_loss(
                     logits_shape, main_logits, main_logits - logits_shape, y_a,
                     confusable_pairs_idx=pair_idx,
                     lambda_sparse=args.sparse_lambda, lambda_diff=args.diff_lambda)
-                loss = loss_main + loss_res
+                # SIGReg 归入 loss_res (作用在 unified 特征上, 影响双流)
+                if args.sigreg_lambda > 0.0:
+                    loss_res = loss_res + args.sigreg_lambda * sigreg_loss(
+                        unified, n_projections=args.sigreg_proj)
+                # ── clifford_align: 分别 backward, rotor 对称对齐后求和 ──
+                loss_main.backward(retain_graph=True)
+                grads_main = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
+                              for p in net.parameters()]
+                optimizer.zero_grad()
+                loss_res.backward()
+                grads_res = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
+                             for p in net.parameters()]
+                g_main_flat = torch.cat([g.flatten() for g in grads_main])
+                g_res_flat = torch.cat([g.flatten() for g in grads_res])
+                g_main_aligned, g_res_aligned = clifford_align(g_main_flat, g_res_flat)
+                optimizer.zero_grad()
+                offset = 0
+                for p in net.parameters():
+                    n = p.numel()
+                    p.grad = (g_main_aligned[offset:offset + n].view_as(p) +
+                              g_res_aligned[offset:offset + n].view_as(p)).clone()
+                    offset += n
+                loss = loss_main + loss_res  # 仅用于日志
                 decoder_out = None
             else:
                 main_logits, unified, decoder_out = out
                 loss = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
-            # SIGReg (LeJEPA): 强制 unified 特征空间高斯; λ=0 时跳过
-            if args.sigreg_lambda > 0.0:
-                loss = loss + args.sigreg_lambda * sigreg_loss(unified, n_projections=args.sigreg_proj)
-            # 自监督重建正则: 重建灰度输入 (生成式辅助任务, 限定数据集内增强特征学习)
-            if args.recon_lambda > 0.0 and decoder_out is not None:
-                target = nn.functional.interpolate(images, size=decoder_out.shape[-2:],
-                                                   mode="bilinear", align_corners=False)
-                loss = loss + args.recon_lambda * nn.functional.mse_loss(decoder_out, target)
-            loss.backward()
+                # SIGReg (LeJEPA): 强制 unified 特征空间高斯; λ=0 时跳过
+                if args.sigreg_lambda > 0.0:
+                    loss = loss + args.sigreg_lambda * sigreg_loss(unified, n_projections=args.sigreg_proj)
+                # 自监督重建正则: 重建灰度输入 (生成式辅助任务, 限定数据集内增强特征学习)
+                if args.recon_lambda > 0.0 and decoder_out is not None:
+                    target = nn.functional.interpolate(images, size=decoder_out.shape[-2:],
+                                                       mode="bilinear", align_corners=False)
+                    loss = loss + args.recon_lambda * nn.functional.mse_loss(decoder_out, target)
+                loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
             optimizer.step()
             ema.update(net)
