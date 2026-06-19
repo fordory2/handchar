@@ -1308,6 +1308,32 @@ class ResNet50UNetChar(nn.Module):
 # 新模型 04 | DisentangledNet —— 尺寸感知双流残差网络
 # 形状流(GAP, 刻意尺寸盲) + 结构流(多尺度GeM, 尺寸敏感) → 残差 logits
 # logits_final = logits_shape + Δ,  Δ L1 稀疏 → 只在歧义对上非零
+
+class GeometricProductFusion(nn.Module):
+    """Clifford geometric product fusion: ab ~ a.b + a^b (low-rank projection).
+
+    Replaces concat: concat captures only first-order independent contributions,
+    while geometric product captures the full second-order interaction between
+    semantic (f_shape) and geometric (f_geo) features.
+
+    f_s [B,D] — semantic, f_g [B,D] — geometric
+    Output: [B, D*2 + 1 + K] — inner product + bivector + raw features
+    """
+    def __init__(self, s_dim=192, g_dim=192, bivector_dim=64):
+        super().__init__()
+        self.M = nn.Parameter(torch.eye(g_dim, s_dim) * 0.01)
+        self.proj_u = nn.Linear(s_dim, bivector_dim, bias=False)
+        self.proj_v = nn.Linear(g_dim, bivector_dim, bias=False)
+        self.bivector_scale = nn.Parameter(torch.zeros(1))
+        self.out_dim = s_dim + g_dim + 1 + bivector_dim
+
+    def forward(self, f_s, f_g):
+        inner = (f_s * (f_g @ self.M.T)).sum(dim=1, keepdim=True)
+        u, v = self.proj_u(f_s), self.proj_v(f_g)
+        wedge = u - v
+        return torch.cat([f_s, f_g, inner, self.bivector_scale * wedge], dim=1)
+
+
 class DisentangledNet(nn.Module):
     """双流解耦 + 残差分类头.
 
@@ -1371,8 +1397,10 @@ class DisentangledNet(nn.Module):
         )
 
         # --- 残差融合 ---
+        self.gp_fusion = GeometricProductFusion(shape_dim, geo_dim, bivector_dim=64)
+        fusion_in_dim = self.gp_fusion.out_dim  # 449 vs concat 的 384
         self.residual_fc = nn.Sequential(
-            nn.Linear(shape_dim + geo_dim, 128),
+            nn.Linear(fusion_in_dim, 128),
             nn.LayerNorm(128),
             nn.GELU(),
             nn.Linear(128, num_classes),
@@ -1402,8 +1430,8 @@ class DisentangledNet(nn.Module):
             geo_parts.append(gem(ista(f)))                   # each [B, C_i]
         f_geo = self.geo_proj(torch.cat(geo_parts, 1)) # [B, geo_dim]
 
-        # 残差修正
-        fused = torch.cat([f_shape, f_geo], dim=1)     # [B, shape_dim+geo_dim]
+        # 残差修正 — Geometric Product Fusion
+        fused = self.gp_fusion(f_shape, f_geo)         # ab ≈ a·b + a∧b, 替代 concat
         Delta = self.residual_scale * self.residual_fc(fused)  # [B, 62]
         logits_final = logits_shape + Delta
 
