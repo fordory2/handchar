@@ -260,6 +260,7 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
         net.train()
         total_main = 0.0
         correct = total = 0
+        batch_count = 0
         for images, y_a, y_b, lam in train_loader:
             # MixUp 4 元组: lam=1.0 时 y_b=y_a, 等价无 MixUp
             images = images.to(DEVICE)
@@ -279,6 +280,27 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                 if args.sigreg_lambda > 0.0:
                     loss_res = loss_res + args.sigreg_lambda * sigreg_loss(
                         unified, n_projections=args.sigreg_proj)
+                # ── 梯度诊断: 量度 ||g_main||, ||g_res||, cos(g_main, g_res) ──
+                do_diag = args.grad_diag and (batch_count % args.grad_diag_interval == 0)
+                if do_diag:
+                    loss_main.backward(retain_graph=True)
+                    g_main_sq = sum((p.grad ** 2).sum() for p in net.parameters() if p.grad is not None)
+                    g_main_norm = g_main_sq.sqrt()
+                    g_main_flat = torch.cat([p.grad.flatten() for p in net.parameters() if p.grad is not None])
+                    optimizer.zero_grad()
+                    loss_res.backward(retain_graph=True)
+                    g_res_sq = sum((p.grad ** 2).sum() for p in net.parameters() if p.grad is not None)
+                    g_res_norm = g_res_sq.sqrt()
+                    g_res_flat = torch.cat([p.grad.flatten() for p in net.parameters() if p.grad is not None])
+                    cos_theta = (g_main_flat @ g_res_flat) / (g_main_norm * g_res_norm + 1e-8)
+                    g_comb_norm = (g_main_flat + g_res_flat).norm()
+                    # 只在新 epoch 第一批或每 5 个诊断点才 print (避免刷屏)
+                    if batch_count == 0 or batch_count % (args.grad_diag_interval * 5) == 0:
+                        print("  [GRAD_DIAG] step=%3d |g_main|=%.2f |g_res|=%.2f cos=%.3f ratio=%.2f |g_comb|=%.2f" %
+                              (batch_count, g_main_norm.item(), g_res_norm.item(),
+                               cos_theta.item(), g_main_norm.item() / (g_res_norm.item() + 1e-8),
+                               g_comb_norm.item()), flush=True)
+                    optimizer.zero_grad()
                 if args.clifford_align:
                     # ── clifford_align: 分别 backward, rotor 对称对齐后求和 ──
                     from losses import clifford_align
@@ -323,6 +345,7 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
             # train acc 按 y_a 算 (近似, MixUp 时 lam 偏 1 多数)
             correct += (main_logits.argmax(1) == y_a).sum().item()
             total += y_a.size(0)
+            batch_count += 1
 
         # LR 调度: SWA 阶段 (epoch >= swa_start) 走 SWALR 固定/退火; 否则 cosine
         if swa_model is not None and epoch >= args.swa_start:
@@ -452,6 +475,10 @@ def main():
                         help="disentangled: 歧义对 Δ 差异鼓励权重 (默认 0.1)")
     parser.add_argument("--clifford_align", action="store_true",
                         help="disentangled: 用 Clifford rotor 对称对齐 loss_main/loss_res 梯度 (消解冲突)")
+    parser.add_argument("--grad_diag", action="store_true",
+                        help="disentangled: 每 N batch 诊断 ||g_main||, ||g_res||, cos(g_main,g_res)")
+    parser.add_argument("--grad_diag_interval", type=int, default=25,
+                        help="梯度诊断间隔 (batch 数), 默认 25")
     parser.add_argument("--shape_dim", type=int, default=192,
                         help="disentangled: 形状流特征维度 (默认 192)")
     parser.add_argument("--geo_dim", type=int, default=192,
