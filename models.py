@@ -1349,7 +1349,7 @@ class DisentangledNet(nn.Module):
         stage_dims = [f.shape[1] for f in feats]  # [s1_dim, s2_dim, s3_dim, s4_dim]
 
         # --- Stream S: 形状流 ---
-        self.shape_pool = nn.AdaptiveAvgPool2d(1)       # GAP → 尺寸盲
+        self.shape_pool = GeMPool()                      # GeM → 尺寸敏感, 和几何流同向
         self.shape_proj = nn.Sequential(
             nn.Linear(stage_dims[3], shape_dim),
             nn.LayerNorm(shape_dim),
