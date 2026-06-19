@@ -282,28 +282,9 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                         unified, n_projections=args.sigreg_proj)
                 # ── 梯度诊断: 量度 ||g_main||, ||g_res||, cos(g_main, g_res) ──
                 do_diag = args.grad_diag and (batch_count % args.grad_diag_interval == 0)
-                if do_diag:
-                    loss_main.backward(retain_graph=True)
-                    g_main_sq = sum((p.grad ** 2).sum() for p in net.parameters() if p.grad is not None)
-                    g_main_norm = g_main_sq.sqrt()
-                    g_main_flat = torch.cat([p.grad.flatten() for p in net.parameters() if p.grad is not None])
-                    optimizer.zero_grad()
-                    loss_res.backward(retain_graph=True)
-                    g_res_sq = sum((p.grad ** 2).sum() for p in net.parameters() if p.grad is not None)
-                    g_res_norm = g_res_sq.sqrt()
-                    g_res_flat = torch.cat([p.grad.flatten() for p in net.parameters() if p.grad is not None])
-                    cos_theta = (g_main_flat @ g_res_flat) / (g_main_norm * g_res_norm + 1e-8)
-                    g_comb_norm = (g_main_flat + g_res_flat).norm()
-                    # 只在新 epoch 第一批或每 5 个诊断点才 print (避免刷屏)
-                    if batch_count == 0 or batch_count % (args.grad_diag_interval * 5) == 0:
-                        print("  [GRAD_DIAG] step=%3d |g_main|=%.2f |g_res|=%.2f cos=%.3f ratio=%.2f |g_comb|=%.2f" %
-                              (batch_count, g_main_norm.item(), g_res_norm.item(),
-                               cos_theta.item(), g_main_norm.item() / (g_res_norm.item() + 1e-8),
-                               g_comb_norm.item()), flush=True)
-                    optimizer.zero_grad()
-                if args.clifford_align:
-                    # ── clifford_align: 分别 backward, rotor 对称对齐后求和 ──
-                    from losses import clifford_align
+                do_separate = args.gme or args.clifford_align or do_diag
+                if do_separate:
+                    # 分别 backward, 可复用给 GME / clifford_align / 诊断
                     loss_main.backward(retain_graph=True)
                     grads_main = [p.grad.clone() if p.grad is not None else torch.zeros_like(p)
                                   for p in net.parameters()]
@@ -313,13 +294,35 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                                  for p in net.parameters()]
                     g_main_flat = torch.cat([g.flatten() for g in grads_main])
                     g_res_flat = torch.cat([g.flatten() for g in grads_res])
-                    g_main_aligned, g_res_aligned = clifford_align(g_main_flat, g_res_flat)
+                    g_main_norm = g_main_flat.norm()
+                    g_res_norm = g_res_flat.norm()
+                    # 诊断打印
+                    if do_diag and (batch_count == 0 or batch_count % (args.grad_diag_interval * 5) == 0):
+                        cos_theta = (g_main_flat @ g_res_flat) / (g_main_norm * g_res_norm + 1e-8)
+                        g_comb_norm = (g_main_flat + g_res_flat).norm()
+                        print("  [GRAD_DIAG] step=%3d |g_main|=%.2f |g_res|=%.2f cos=%.3f ratio=%.2f |g_comb|=%.2f" %
+                              (batch_count, g_main_norm.item(), g_res_norm.item(),
+                               cos_theta.item(), g_main_norm.item() / (g_res_norm.item() + 1e-8),
+                               g_comb_norm.item()), flush=True)
+                    # GME: 梯度幅值均衡 (cos>0 时方向不变, 仅校准幅值)
+                    if args.gme:
+                        hmean = 2.0 / (1.0 / (g_main_norm + 1e-8) + 1.0 / (g_res_norm + 1e-8))
+                        g_main_eq = g_main_flat * (hmean / (g_main_norm + 1e-8))
+                        g_res_eq  = g_res_flat  * (hmean / (g_res_norm  + 1e-8))
+                        g_combined = g_main_eq + g_res_eq
+                    # clifford_align: 方向对齐 (cos<0 时 rotor 旋转, cos≥0 时不干预)
+                    elif args.clifford_align:
+                        from losses import clifford_align
+                        g_main_al, g_res_al = clifford_align(g_main_flat, g_res_flat)
+                        g_combined = g_main_al + g_res_al
+                    else:
+                        # 诊断模式: 仅观察, 不修改梯度
+                        g_combined = g_main_flat + g_res_flat
                     optimizer.zero_grad()
                     offset = 0
                     for p in net.parameters():
                         n = p.numel()
-                        p.grad = (g_main_aligned[offset:offset + n].view_as(p) +
-                                  g_res_aligned[offset:offset + n].view_as(p)).clone()
+                        p.grad = g_combined[offset:offset + n].view_as(p).clone()
                         offset += n
                 else:
                     loss = loss_main + loss_res
@@ -475,6 +478,8 @@ def main():
                         help="disentangled: 歧义对 Δ 差异鼓励权重 (默认 0.1)")
     parser.add_argument("--clifford_align", action="store_true",
                         help="disentangled: 用 Clifford rotor 对称对齐 loss_main/loss_res 梯度 (消解冲突)")
+    parser.add_argument("--gme", action="store_true",
+                        help="disentangled: 梯度幅值均衡——单位方向+调和平均步长 (消解幅值失衡)")
     parser.add_argument("--grad_diag", action="store_true",
                         help="disentangled: 每 N batch 诊断 ||g_main||, ||g_res||, cos(g_main,g_res)")
     parser.add_argument("--grad_diag_interval", type=int, default=25,
