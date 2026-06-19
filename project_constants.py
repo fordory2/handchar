@@ -17,6 +17,8 @@ AUX_CLASSES = 3   # digit / upper / lower
 DROPOUT = 0.146
 NUM_WORKERS = int(os.environ.get("HANDCHAR_NUM_WORKERS", 0))  # Windows 默认 0; Linux 可设 8
 PIN_MEMORY = DEVICE.type == "cuda"
+ERASE_PROB = float(os.environ.get("HANDCHAR_ERASE_PROB", 0.5))    # RandomErasing 概率; 0=关
+MIXUP_PROB = float(os.environ.get("HANDCHAR_MIXUP_PROB", 0.5))    # MixUp 触发概率; 0=关
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True  # 锁定确定性: 同 seed 两次结果一致
 

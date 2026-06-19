@@ -223,7 +223,10 @@ class Augment:
 
         # Random Erasing (p=0.5): 矩形遮罩面积 2%-15%, 填 0 (纸色). 强迫不依赖具体像素块.
         # 跳过 erase_big 敏感类 (il1.) — 单笔画/小点, 大遮罩易直接消失
-        erase_mask = torch.rand(batch_size, device=device) < 0.5
+        erase_prob = float(os.environ.get("HANDCHAR_ERASE_PROB", 0.5))
+        if erase_prob <= 0:
+            return batch
+        erase_mask = torch.rand(batch_size, device=device) < erase_prob
         erase_applicable = erase_mask & ~sensitive_mask('erase_big')
         if erase_applicable.any():
             img_area = height * width
@@ -258,7 +261,7 @@ class CharDataset(Dataset):
 
 
 MIXUP_ALPHA = 0.2
-MIXUP_PROB = 0.5
+MIXUP_PROB = float(os.environ.get("HANDCHAR_MIXUP_PROB", 0.5))
 
 
 def collate_with_augment(batch):
