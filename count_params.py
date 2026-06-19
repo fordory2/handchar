@@ -37,7 +37,7 @@ def _add_model_args(p):
     """镜像 train 里 _build_net 用到的全部参数 (默认值保持一致)。"""
     p.add_argument("--arch", type=str, default="transfer_adapter")
     p.add_argument("--transfer_model", type=str, default="convnextv2_femto")
-    p.add_argument("--transfer_input", type=int, default=160)
+    p.add_argument("--transfer_input", type=int, default=224)
     p.add_argument("--transfer_ms_stages", type=int, default=2)
     p.add_argument("--adapt_dim", type=int, default=64)
     p.add_argument("--adapter_branches", type=str, default="spatial,channel,multiscale")

@@ -394,7 +394,7 @@ def main():
                         help="convnextv2p 上采样目标分辨率 (默认 96; atto stem stride=4 适配)")
     parser.add_argument("--transfer_model", type=str, default="convnextv2_femto",
                         help="arch=transfer 时的 timm 骨干名 (resnet50/convnext_tiny/tf_efficientnet_b0 等; 见 dl-vision-backbones-ssl 选型)")
-    parser.add_argument("--transfer_input", type=int, default=160,
+    parser.add_argument("--transfer_input", type=int, default=224,
                         help="arch=transfer 上采样目标分辨率 (默认 160; 更接近 ImageNet 原生)")
     parser.add_argument("--transfer_ms_stages", type=int, default=2,
                         help="transfer_ms: 聚合最后 N 个 stage 的多尺度特征 (默认 2)")
