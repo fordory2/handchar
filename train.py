@@ -273,10 +273,9 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
             y_b = y_b.to(DEVICE)
             optimizer.zero_grad()
             if args.arch == "unrolled":
-                # UnrolledNet: targets 传入 forward 供近端梯度步计算
-                main_logits, logits_shape, Delta = net(images, targets=y_a)
-                loss = lam * nn.CrossEntropyLoss()(main_logits, y_a) + \
-                       (1.0 - lam) * nn.CrossEntropyLoss()(main_logits, y_b)
+                main_logits, logits_shape, Delta = net(images)
+                ce_loss = nn.CrossEntropyLoss()
+                loss = lam * ce_loss(main_logits, y_a) + (1.0 - lam) * ce_loss(main_logits, y_b)
                 unified = None
                 decoder_out = None
             else:

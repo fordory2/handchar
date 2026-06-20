@@ -1441,11 +1441,17 @@ class FullyUnrolledNet(nn.Module):
         self.W_u_init = nn.Linear(feat_dim, num_classes)
         self.W_v_init = nn.Linear(feat_dim, num_classes)
 
-        # Per-step learnable proximal parameters
-        self.etas       = nn.ParameterList([nn.Parameter(torch.tensor(0.1)) for _ in range(steps)])
-        self.lambdas_l2 = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
-        self.thetas_l1  = nn.ParameterList([nn.Parameter(torch.tensor(0.05)) for _ in range(steps)])
-        self.mus        = nn.ParameterList([nn.Parameter(torch.tensor(1e-5)) for _ in range(steps)])
+        # Per-step projections with LayerNorm for scale normalization
+        ctx_dim = num_classes * 2 + feat_dim  # 62+62+256 = 380
+        self.W_u_steps = nn.ModuleList([
+            nn.Sequential(nn.LayerNorm(ctx_dim), nn.Linear(ctx_dim, num_classes))
+            for _ in range(steps)])
+        self.W_v_steps = nn.ModuleList([
+            nn.Sequential(nn.LayerNorm(ctx_dim), nn.Linear(ctx_dim, num_classes))
+            for _ in range(steps)])
+        # Per-step proximal scalars
+        self.etas_u  = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
+        self.thetas_v = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
 
     def _preprocess(self, x):
         import torch.nn.functional as F
@@ -1456,44 +1462,24 @@ class FullyUnrolledNet(nn.Module):
         return (x - self._mean) / self._std
 
     def forward(self, x, targets=None):
+        import torch.nn.functional as F
         x = self._preprocess(x)
         feats = self.backbone(x)
         z = self.gem(feats[-1] if isinstance(feats, list) else feats).flatten(1)
 
-        u = self.W_u_init(z)
-        v = self.W_v_init(z)
+        u = self.W_u_init(z)   # [B, 62]
+        v = self.W_v_init(z)   # [B, 62]
 
-        if targets is not None:
-            for k in range(self.steps):
-                u, v = self._proximal_step(u, v, targets, k)
+        for k in range(self.steps):
+            ctx = torch.cat([u, v, z], dim=-1)           # [B, 380], z re-injected
+            u = u + self.W_u_steps[k](ctx)               # learnable gradient
+            u = u / (1.0 + 2.0 * self.etas_u[k])         # ridge proximal (L2)
+
+            ctx = torch.cat([u, v, z], dim=-1)           # updated u
+            v = v + self.W_v_steps[k](ctx)               # learnable gradient
+            v = F.softshrink(v, self.thetas_v[k])         # L1 proximal via soft-shrink
 
         return u + v, u, v   # logits_final, logits_shape, Delta
-
-    def _proximal_step(self, u, v, targets, k):
-        import torch.nn.functional as F
-        eta, l2, th, mu = self.etas[k], self.lambdas_l2[k], self.thetas_l1[k], self.mus[k]
-
-        # CE gradient: softmax(logits) - one_hot(targets), non-inplace
-        def _ce_grad(logits, tgt):
-            p = F.softmax(logits, dim=-1)
-            oh = torch.zeros_like(p).scatter(1, tgt.unsqueeze(1), 1.0)
-            return p - oh
-
-        # -------- Shape step: CE gradient + ridge proximal --------
-        g_shape = _ce_grad(u + v, targets)
-        u_dot_v  = (u * v).sum(-1, keepdim=True) / 62.0   # per-class mean
-        decouple = 2.0 * mu * u_dot_v * v
-        r_s = u - eta * (g_shape + decouple)
-        u_new = r_s / (1.0 + 2.0 * eta * l2)
-
-        # -------- Geometry step: CE gradient (updated u) + L1 proximal --------
-        g_geo = _ce_grad(u_new + v, targets)
-        u_new_dot_v = (u_new * v).sum(-1, keepdim=True) / 62.0
-        decouple_geo = 2.0 * mu * u_new_dot_v * u_new
-        r_g = v - eta * (g_geo + decouple_geo)
-        v_new = torch.sign(r_g) * F.relu(torch.abs(r_g) - th)
-
-        return u_new, v_new
 
     def param_groups(self, base_lr, backbone_lr_mult=0.1, weight_decay=5e-4):
         bb_ids = set(id(p) for p in self.backbone.parameters())
