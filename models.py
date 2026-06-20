@@ -1441,17 +1441,15 @@ class FullyUnrolledNet(nn.Module):
         self.W_u_init = nn.Linear(feat_dim, num_classes)
         self.W_v_init = nn.Linear(feat_dim, num_classes)
 
-        # Per-step projections with LayerNorm for scale normalization
-        ctx_dim = num_classes * 2 + feat_dim  # 62+62+256 = 380
-        self.W_u_steps = nn.ModuleList([
-            nn.Sequential(nn.LayerNorm(ctx_dim), nn.Linear(ctx_dim, num_classes))
-            for _ in range(steps)])
-        self.W_v_steps = nn.ModuleList([
-            nn.Sequential(nn.LayerNorm(ctx_dim), nn.Linear(ctx_dim, num_classes))
-            for _ in range(steps)])
-        # Per-step proximal scalars
-        self.etas_u  = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
-        self.thetas_v = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
+        # Per-step projections: LN → Linear, zero-init → identity at t=0
+        ctx_dim = num_classes * 2 + feat_dim
+        self.W_u_steps = nn.ModuleList([nn.Sequential(
+            nn.LayerNorm(ctx_dim), _ZeroInitLinear(ctx_dim, num_classes)) for _ in range(steps)])
+        self.W_v_steps = nn.ModuleList([nn.Sequential(
+            nn.LayerNorm(ctx_dim), _ZeroInitLinear(ctx_dim, num_classes)) for _ in range(steps)])
+        # Proximal scalars: η starts from 0.1 (meaningful update), θ from 0 (no sparsity)
+        self.etas_u   = nn.ParameterList([nn.Parameter(torch.tensor(0.1)) for _ in range(steps)])
+        self.thetas_v = nn.ParameterList([nn.Parameter(torch.zeros(1)) for _ in range(steps)])
 
     def _preprocess(self, x):
         import torch.nn.functional as F
@@ -1499,6 +1497,15 @@ class FullyUnrolledNet(nn.Module):
     def unfreeze_backbone(self):
         for p in self.backbone.parameters():
             p.requires_grad = True
+
+
+class _ZeroInitLinear(nn.Linear):
+    """Linear layer with zero weight init → identity in residual chain at t=0."""
+    def __init__(self, in_features, out_features):
+        super().__init__(in_features, out_features)
+        nn.init.zeros_(self.weight)
+        if self.bias is not None:
+            nn.init.zeros_(self.bias)
 
 
 class _BasicBlock(nn.Module):
