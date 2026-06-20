@@ -1576,6 +1576,18 @@ class DisentangledNet(nn.Module):
         if model_name in ('tinyresnet', 'tinyresnet_scratch'):
             # Standard 3x3 conv backbone (~0.50M), optional ImageNet pretrain
             self.backbone = TinyResNet(pretrained=(model_name == 'tinyresnet'))
+        elif model_name == 'seresnet18':
+            # SE-ResNet18: no official pretrained weights, use resnet18 + random SE init
+            import timm
+            self.backbone = timm.create_model(
+                'seresnet18', pretrained=False, in_chans=in_chans,
+                features_only=True, out_indices=(0, 1, 2, 3))
+            if pretrained:
+                src = timm.create_model(
+                    'resnet18', pretrained=True, in_chans=in_chans,
+                    features_only=True, out_indices=(0, 1, 2, 3))
+                missing, _ = self.backbone.load_state_dict(src.state_dict(), strict=False)
+                del src
         else:
             import timm
             try:
