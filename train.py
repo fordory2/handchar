@@ -74,8 +74,8 @@ def _build_net(args):
             ista_steps=args.ista_steps,
         ).to(DEVICE)
     if args.arch == "unrolled":
-        from models import UnrolledNet
-        return UnrolledNet(
+        from models import FullyUnrolledNet
+        return FullyUnrolledNet(
             backbone_type=args.unrolled_backbone, num_classes=NUM_CLASSES,
         ).to(DEVICE)
     if args.arch == "transfer_adapter":

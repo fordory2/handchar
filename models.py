@@ -1384,7 +1384,7 @@ class TinyResNet(nn.Module):
 
 
 
-class UnrolledNet(nn.Module):
+class FullyUnrolledNet(nn.Module):
     """Network unrolled from alternating proximal gradient descent on logit space.
 
     Solves:  min_{u,v} CE(y, softmax(u+v)) + lambda_1*||v||_1 + lambda_2*||u||^2 + mu*(u.v)^2
@@ -1394,6 +1394,7 @@ class UnrolledNet(nn.Module):
     u = shape component (ridge proximal), v = geometry component (L1 proximal).
     Output: logits_final = u + v, logits_shape = u, Delta = v.
     """
+
     def __init__(self, backbone_type='tinyresnet', num_classes=62, feat_dim=256, steps=2):
         super().__init__()
         self.steps = steps
@@ -2242,3 +2243,6 @@ class TransferBackboneAdapter(_TransferBase):
         pooled = self.norm(torch.cat(parts, dim=1))
         recon_out = self.decoder(a) if self.decoder is not None else None
         return self.head(self.drop(pooled)), pooled, recon_out
+
+# Backward compatibility alias
+UnrolledNet = FullyUnrolledNet
