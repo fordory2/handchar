@@ -1371,11 +1371,7 @@ class TinyResNet(nn.Module):
         _copy_resnet_block(self.block0.conv, src.layer1[0])
         _copy_resnet_block(self.block1.conv, src.layer1[1])
         _copy_resnet_block(self.reduction1.conv, src.layer2[0])
-        # reduction2 downsample from layer2[1], conv layers random init
-        if self.reduction2.downsample:
-            _copy_resnet_ds(self.reduction2.downsample, src.layer2[0].downsample)
-        # Copy conv1 from layer2[1] to give the first conv a reasonable start
-        self.reduction2.conv[0].weight.data.copy_(src.layer2[1].conv1.weight.data)
+        # reduction2: random init (no matching ResNet block for 128→256 stride 2)
         del src
 
     def forward(self, x):
