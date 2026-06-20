@@ -1377,10 +1377,11 @@ class TinyResNet(nn.Module):
         del src
 
     def forward(self, x):
-        s0 = self.stem(x)        # [B, 64,  56, 56]
-        s1 = self.block0(s0)     # [B, 64,  56, 56]
-        s2 = self.reduction1(s1) # [B, 128, 28, 28]
-        s3 = self.reduction2(s2) # [B, 256, 14, 14]
+        s0 = self.stem(x)         # [B, 64,  H/4,  W/4]
+        x = self.block0(s0)
+        s1 = self.block1(x)       # [B, 64,  H/4,  W/4]
+        s2 = self.reduction1(s1)  # [B, 128, H/8,  W/8]
+        s3 = self.reduction2(s2)  # [B, 256, H/16, W/16]
         return [s0, s1, s2, s3]
 
 
