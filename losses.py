@@ -113,9 +113,14 @@ def residual_loss(logits_shape, logits_final, Delta, targets,
         for i, j in confusable_pairs_idx:
             cw_cons[i] = cw_cons[j] = 0.1
 
-    # ---- MSE Consistency: shape follows final (final detached, no grad flow back) ----
-    sq_diff = (logits_shape - logits_final.detach()).pow(2)
-    L_cons = (sq_diff * cw_cons.unsqueeze(0)).mean()
+    # ---- KL Consistency: shape follows final (T=3, class-conditional) ----
+    # KL(final||shape) = sum(final_soft * log(final_soft / shape_soft))
+    # Gradient flows only through shape_soft (final detached), strength ≈ CE with soft labels
+    T = 3.0
+    final_soft = (logits_final.detach() / T).softmax(dim=-1)      # [B,62], teacher
+    shape_log_soft = (logits_shape / T).log_softmax(dim=-1)        # [B,62], student
+    kl_per_class = final_soft * (final_soft.log() - shape_log_soft)  # [B,62]
+    L_cons = (kl_per_class.sum(-1) * T * T * cw_cons.unsqueeze(0)).mean()
 
     # ---- Sparse regularization (default off via lambda_sparse=0) ----
     cw_sp = torch.ones(Delta.shape[1], device=Delta.device)
