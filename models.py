@@ -1437,9 +1437,9 @@ class FullyUnrolledNet(nn.Module):
         self.register_buffer('_mean', torch.tensor(imagenet_mean).view(1,3,1,1))
         self.register_buffer('_std',  torch.tensor(imagenet_std).view(1,3,1,1))
 
-        # Initial projections
-        self.W_u_init = nn.Linear(feat_dim, num_classes)
-        self.W_v_init = nn.Linear(feat_dim, num_classes)
+        # Structured initial projection: single Linear, split u/v, v starts zero
+        self.W_init = nn.Linear(feat_dim, num_classes * 2)  # [B, 124]
+        self.W_v_gate = nn.Parameter(torch.zeros(1))         # v scale init = 0
 
         # Per-step projections: LN → Linear, zero-init → identity at t=0
         ctx_dim = num_classes * 2 + feat_dim
@@ -1465,8 +1465,9 @@ class FullyUnrolledNet(nn.Module):
         feats = self.backbone(x)
         z = self.gem(feats[-1] if isinstance(feats, list) else feats).flatten(1)
 
-        u = self.W_u_init(z)   # [B, 62]
-        v = self.W_v_init(z)   # [B, 62]
+        uv = self.W_init(z)                    # [B, 124]
+        u = uv[:, :num_classes]                 # [B, 62] shape component
+        v = uv[:, num_classes:] * self.W_v_gate # [B, 62] geometry, zero-init → identity
 
         for k in range(self.steps):
             ctx = torch.cat([u, v, z], dim=-1)           # [B, 380], z re-injected
