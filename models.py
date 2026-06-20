@@ -1445,7 +1445,7 @@ class FullyUnrolledNet(nn.Module):
         self.etas       = nn.ParameterList([nn.Parameter(torch.tensor(0.1)) for _ in range(steps)])
         self.lambdas_l2 = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
         self.thetas_l1  = nn.ParameterList([nn.Parameter(torch.tensor(0.05)) for _ in range(steps)])
-        self.mus        = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
+        self.mus        = nn.ParameterList([nn.Parameter(torch.tensor(1e-5)) for _ in range(steps)])
 
     def _preprocess(self, x):
         import torch.nn.functional as F
@@ -1481,14 +1481,14 @@ class FullyUnrolledNet(nn.Module):
 
         # -------- Shape step: CE gradient + ridge proximal --------
         g_shape = _ce_grad(u + v, targets)
-        u_dot_v  = (u * v).sum(-1, keepdim=True)
+        u_dot_v  = (u * v).sum(-1, keepdim=True) / 62.0   # per-class mean
         decouple = 2.0 * mu * u_dot_v * v
         r_s = u - eta * (g_shape + decouple)
         u_new = r_s / (1.0 + 2.0 * eta * l2)
 
         # -------- Geometry step: CE gradient (updated u) + L1 proximal --------
         g_geo = _ce_grad(u_new + v, targets)
-        u_new_dot_v = (u_new * v).sum(-1, keepdim=True)
+        u_new_dot_v = (u_new * v).sum(-1, keepdim=True) / 62.0
         decouple_geo = 2.0 * mu * u_new_dot_v * u_new
         r_g = v - eta * (g_geo + decouple_geo)
         v_new = torch.sign(r_g) * F.relu(torch.abs(r_g) - th)
