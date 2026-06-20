@@ -1477,7 +1477,7 @@ class FullyUnrolledNet(nn.Module):
 
             ctx = torch.cat([u, v, z], dim=-1)           # updated u
             v = v + self.W_v_steps[k](ctx)               # learnable gradient
-            v = F.softshrink(v, self.thetas_v[k])         # L1 proximal via soft-shrink
+            v = torch.sign(v) * F.relu(torch.abs(v) - self.thetas_v[k])  # L1 proximal
 
         return u + v, u, v   # logits_final, logits_shape, Delta
 
