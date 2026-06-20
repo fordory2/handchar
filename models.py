@@ -1433,6 +1433,7 @@ class UnrolledNet(nn.Module):
         self.mus        = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
 
     def _preprocess(self, x):
+        import torch.nn.functional as F
         if x.shape[-2] != self.input_size:
             x = F.interpolate(x, size=(self.input_size, self.input_size), mode='bilinear', align_corners=False)
         if x.shape[1] == 1:
@@ -1454,19 +1455,24 @@ class UnrolledNet(nn.Module):
         return u + v, u, v   # logits_final, logits_shape, Delta
 
     def _proximal_step(self, u, v, targets, k):
+        import torch.nn.functional as F
         eta, l2, th, mu = self.etas[k], self.lambdas_l2[k], self.thetas_l1[k], self.mus[k]
 
+        # CE gradient: softmax(logits) - one_hot(targets), non-inplace
+        def _ce_grad(logits, tgt):
+            p = F.softmax(logits, dim=-1)
+            oh = torch.zeros_like(p).scatter(1, tgt.unsqueeze(1), 1.0)
+            return p - oh
+
         # -------- Shape step: CE gradient + ridge proximal --------
-        g_shape = F.softmax(u + v, dim=-1)
-        g_shape.scatter_(1, targets.unsqueeze(1), g_shape.gather(1, targets.unsqueeze(1)) - 1.0)
+        g_shape = _ce_grad(u + v, targets)
         u_dot_v  = (u * v).sum(-1, keepdim=True)
         decouple = 2.0 * mu * u_dot_v * v
         r_s = u - eta * (g_shape + decouple)
         u_new = r_s / (1.0 + 2.0 * eta * l2)
 
         # -------- Geometry step: CE gradient (updated u) + L1 proximal --------
-        g_geo = F.softmax(u_new + v, dim=-1)
-        g_geo.scatter_(1, targets.unsqueeze(1), g_geo.gather(1, targets.unsqueeze(1)) - 1.0)
+        g_geo = _ce_grad(u_new + v, targets)
         u_new_dot_v = (u_new * v).sum(-1, keepdim=True)
         decouple_geo = 2.0 * mu * u_new_dot_v * u_new
         r_g = v - eta * (g_geo + decouple_geo)
