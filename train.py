@@ -335,6 +335,8 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
                     loss.backward()
                 loss = loss_main + loss_res  # 仅用于日志
                 decoder_out = None
+            elif args.arch == "unrolled":
+                pass  # loss already computed above, decoder_out already None
             else:
                 main_logits, unified, decoder_out = out
                 loss = lam * focal_crit(main_logits, y_a) + (1.0 - lam) * focal_crit(main_logits, y_b)
