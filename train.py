@@ -516,8 +516,8 @@ def main():
                              "实测 init focal=4 vs sigreg=0.008, 监督场景 λ=5 → 后期 sigreg 项 ≤ 40% focal)")
     parser.add_argument("--sigreg_proj", type=int, default=1024,
                         help="SIGReg 投影方向数 (论文默认 1024, 仅 λ>0 时生效)")
-    parser.add_argument("--swa_start", type=int, default=75,
-                        help="SWA 起始 epoch (0=禁用); 默认 75 = 100ep 的后 25%")
+    parser.add_argument("--swa_start", type=int, default=0,
+                        help="SWA 起始 epoch (0=禁用); 默认关 (已证实 SWA 对 DisentangledNet 无增益)")
     parser.add_argument("--swa_lr", type=float, default=5e-4,
                         help="SWA 阶段固定 LR (默认 5e-4, AdamW base lr 的 ~1/2)")
     parser.add_argument("--freeze_stem_epochs", type=int, default=0,
