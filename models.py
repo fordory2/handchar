@@ -1363,17 +1363,19 @@ class TinyResNet(nn.Module):
             src = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
         except Exception:
             return
-        # stem
+        # stem: conv1 + bn1
         self.stem[0].load_state_dict(src.conv1.state_dict())
         self.stem[1].load_state_dict(src.bn1.state_dict())
-        # block0 = layer1[0], block1 = layer1[1]
-        _copy_block(self.block0, src.layer1[0])
-        _copy_block(self.block1, src.layer1[1])
-        # reduction1 = layer2[0] (64->128, stride 2)
-        _copy_block(self.reduction1, src.layer2[0])
-        # reduction2: only copy first conv from layer2[1] (128->128 stride 1), rest random
-        self.reduction2.conv[0].load_state_dict(
-            {k: v for k, v in src.layer2[1].conv1.state_dict().items()})
+        # Blocks: our Sequential = [conv1, bn1, relu, conv2, bn2]
+        # ResNet block param names: conv1.weight, bn1.weight, conv2.weight, bn2.weight
+        _copy_resnet_block(self.block0.conv, src.layer1[0])
+        _copy_resnet_block(self.block1.conv, src.layer1[1])
+        _copy_resnet_block(self.reduction1.conv, src.layer2[0])
+        # reduction2 downsample from layer2[1], conv layers random init
+        if self.reduction2.downsample:
+            _copy_resnet_ds(self.reduction2.downsample, src.layer2[0].downsample)
+        # Copy conv1 from layer2[1] to give the first conv a reasonable start
+        self.reduction2.conv[0].weight.data.copy_(src.layer2[1].conv1.weight.data)
         del src
 
     def forward(self, x):
@@ -1396,13 +1398,30 @@ class _BasicBlock(nn.Module):
         return self.act(self.conv(x) + identity)
 
 
-def _copy_block(dst, src):
-    for i, (name, param) in enumerate(src.named_parameters()):
-        parts = name.split(".")
-        target = dst.conv
-        for p in parts[:-1]:
-            target = getattr(target, p)
-        getattr(target, parts[-1]).data.copy_(param.data)
+def _copy_resnet_block(dst_seq, src_block):
+    """Copy ResNet BasicBlock params into our Sequential [conv1, bn1, relu, conv2, bn2]."""
+    s = src_block.state_dict()
+    # dst keys: 0.weight, 1.weight, 1.bias, 1.running_mean, 1.running_var, 3.weight, 4.weight, ...
+    mapping = {'conv1.weight': '0.weight', 'bn1.weight': '1.weight', 'bn1.bias': '1.bias',
+               'bn1.running_mean': '1.running_mean', 'bn1.running_var': '1.running_var',
+               'conv2.weight': '3.weight', 'bn2.weight': '4.weight', 'bn2.bias': '4.bias',
+               'bn2.running_mean': '4.running_mean', 'bn2.running_var': '4.running_var'}
+    d = {}
+    for src_k, dst_k in mapping.items():
+        if src_k in s:
+            d[dst_k] = s[src_k]
+    dst_seq.load_state_dict(d, strict=False)
+
+
+def _copy_resnet_ds(dst_seq, src_ds):
+    """Copy downsample [conv 1x1, bn]."""
+    if src_ds is None:
+        return
+    s = src_ds.state_dict()
+    mapping = {'0.weight': '0.weight', '1.weight': '1.weight', '1.bias': '1.bias',
+               '1.running_mean': '1.running_mean', '1.running_var': '1.running_var'}
+    d = {dst_k: s[src_k] for src_k, dst_k in mapping.items() if src_k in s}
+    dst_seq.load_state_dict(d, strict=False)
 
 class GeometricAlgebraFusion(nn.Module):
     """Geometric Algebra fusion: ab ~ a.b + a^b (low-rank projection).

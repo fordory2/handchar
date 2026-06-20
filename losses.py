@@ -120,7 +120,7 @@ def residual_loss(logits_shape, logits_final, Delta, targets,
     final_soft = (logits_final.detach() / T).softmax(dim=-1)      # [B,62], teacher
     shape_log_soft = (logits_shape / T).log_softmax(dim=-1)        # [B,62], student
     kl_per_class = final_soft * (final_soft.log() - shape_log_soft)  # [B,62]
-    L_cons = (kl_per_class.sum(-1) * T * T * cw_cons.unsqueeze(0)).mean()
+    L_cons = (kl_per_class * cw_cons.unsqueeze(0) * T * T).sum(-1).mean()
 
     # ---- Sparse regularization (default off via lambda_sparse=0) ----
     cw_sp = torch.ones(Delta.shape[1], device=Delta.device)
