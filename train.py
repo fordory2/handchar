@@ -495,7 +495,7 @@ def main():
     parser.add_argument("--ista_steps", type=int, default=2,
                         help="disentangled: ChannelISTA 迭代步数 (默认 2; 0=关)")
     parser.add_argument("--unrolled_backbone", type=str, default="tinyresnet",
-                        choices=["tinyresnet", "tinyresnet_scratch", "mobilenetv4"],
+                        choices=["tinyresnet", "tinyresnet_scratch", "mobilenetv4", "resnet18", "seresnet18"],
                         help="unrolled: backbone 类型")
     parser.add_argument("--recon_lambda", type=float, default=0.0,
                         help="transfer_adapter 辅助重建解码器的损失权重 (自监督重建正则; "

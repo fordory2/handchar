@@ -1400,6 +1400,24 @@ class UnrolledNet(nn.Module):
         # Backbone
         if 'tinyresnet' in backbone_type:
             self.backbone = TinyResNet(pretrained=(backbone_type == 'tinyresnet'))
+        elif backbone_type in ('resnet18', 'seresnet18'):
+            import timm
+            if backbone_type == 'seresnet18':
+                self.backbone = timm.create_model(
+                    'seresnet18', pretrained=False,
+                    features_only=True, out_indices=(0,1,2,3))
+                src = timm.create_model('resnet18', pretrained=True,
+                    features_only=True, out_indices=(0,1,2,3))
+                self.backbone.load_state_dict(src.state_dict(), strict=False)
+                del src
+            else:
+                self.backbone = timm.create_model(
+                    'resnet18', pretrained=True,
+                    features_only=True, out_indices=(0,1,2,3))
+            with torch.no_grad():
+                dummy = torch.randn(1,3,224,224)
+                feats = self.backbone(dummy)
+                feat_dim = feats[-1].shape[1]
         elif backbone_type == 'mobilenetv4':
             import timm
             self.backbone = timm.create_model('mobilenetv4_conv_small', pretrained=True,
