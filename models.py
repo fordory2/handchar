@@ -1398,6 +1398,7 @@ class FullyUnrolledNet(nn.Module):
     def __init__(self, backbone_type='tinyresnet', num_classes=62, feat_dim=256, steps=2):
         super().__init__()
         self.steps = steps
+        self.num_classes = num_classes
         # Backbone
         if 'tinyresnet' in backbone_type:
             self.backbone = TinyResNet(pretrained=(backbone_type == 'tinyresnet'))
@@ -1465,9 +1466,9 @@ class FullyUnrolledNet(nn.Module):
         feats = self.backbone(x)
         z = self.gem(feats[-1] if isinstance(feats, list) else feats).flatten(1)
 
-        uv = self.W_init(z)                    # [B, 124]
-        u = uv[:, :num_classes]                 # [B, 62] shape component
-        v = uv[:, num_classes:] * self.W_v_gate # [B, 62] geometry, zero-init → identity
+        uv = self.W_init(z)                          # [B, 124]
+        u = uv[:, :self.num_classes]                 # [B, 62] shape component
+        v = uv[:, self.num_classes:] * self.W_v_gate # [B, 62] geometry, zero-init
 
         for k in range(self.steps):
             ctx = torch.cat([u, v, z], dim=-1)           # [B, 380], z re-injected
