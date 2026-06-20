@@ -1387,6 +1387,113 @@ class TinyResNet(nn.Module):
         return [s0, s1, s2, s3]
 
 
+
+class UnrolledNet(nn.Module):
+    """Network unrolled from alternating proximal gradient descent on logit space.
+
+    Solves:  min_{u,v} CE(y, softmax(u+v)) + lambda_1*||v||_1 + lambda_2*||u||^2 + mu*(u.v)^2
+    via K=2 steps of block-coordinate proximal gradient, all operators with closed-form.
+
+    Backbone -> GeMPool -> z -> W_u*z, W_v*z -> 2 ISTA-like blocks -> u^2, v^2.
+    u = shape component (ridge proximal), v = geometry component (L1 proximal).
+    Output: logits_final = u + v, logits_shape = u, Delta = v.
+    """
+    def __init__(self, backbone_type='tinyresnet', num_classes=62, feat_dim=256, steps=2):
+        super().__init__()
+        self.steps = steps
+        # Backbone
+        if 'tinyresnet' in backbone_type:
+            self.backbone = TinyResNet(pretrained=(backbone_type == 'tinyresnet'))
+        elif backbone_type == 'mobilenetv4':
+            import timm
+            self.backbone = timm.create_model('mobilenetv4_conv_small', pretrained=True,
+                features_only=True, out_indices=(0,1,2,3))
+            with torch.no_grad():
+                dummy = torch.randn(1,3,224,224)
+                feats = self.backbone(dummy)
+                feat_dim = feats[-1].shape[1]
+        else:
+            raise ValueError(f"Unknown backbone: {backbone_type}")
+        self.feat_dim = feat_dim
+        self.gem = GeMPool()
+        self.input_size = 224
+        imagenet_mean = (0.485, 0.456, 0.406)
+        imagenet_std  = (0.229, 0.224, 0.225)
+        self.register_buffer('_mean', torch.tensor(imagenet_mean).view(1,3,1,1))
+        self.register_buffer('_std',  torch.tensor(imagenet_std).view(1,3,1,1))
+
+        # Initial projections
+        self.W_u_init = nn.Linear(feat_dim, num_classes)
+        self.W_v_init = nn.Linear(feat_dim, num_classes)
+
+        # Per-step learnable proximal parameters
+        self.etas       = nn.ParameterList([nn.Parameter(torch.tensor(0.1)) for _ in range(steps)])
+        self.lambdas_l2 = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
+        self.thetas_l1  = nn.ParameterList([nn.Parameter(torch.tensor(0.05)) for _ in range(steps)])
+        self.mus        = nn.ParameterList([nn.Parameter(torch.tensor(0.01)) for _ in range(steps)])
+
+    def _preprocess(self, x):
+        if x.shape[-2] != self.input_size:
+            x = F.interpolate(x, size=(self.input_size, self.input_size), mode='bilinear', align_corners=False)
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+        return (x - self._mean) / self._std
+
+    def forward(self, x, targets=None):
+        x = self._preprocess(x)
+        feats = self.backbone(x)
+        z = self.gem(feats[-1] if isinstance(feats, list) else feats).flatten(1)
+
+        u = self.W_u_init(z)
+        v = self.W_v_init(z)
+
+        if targets is not None:
+            for k in range(self.steps):
+                u, v = self._proximal_step(u, v, targets, k)
+
+        return u + v, u, v   # logits_final, logits_shape, Delta
+
+    def _proximal_step(self, u, v, targets, k):
+        eta, l2, th, mu = self.etas[k], self.lambdas_l2[k], self.thetas_l1[k], self.mus[k]
+
+        # -------- Shape step: CE gradient + ridge proximal --------
+        g_shape = F.softmax(u + v, dim=-1)
+        g_shape.scatter_(1, targets.unsqueeze(1), g_shape.gather(1, targets.unsqueeze(1)) - 1.0)
+        u_dot_v  = (u * v).sum(-1, keepdim=True)
+        decouple = 2.0 * mu * u_dot_v * v
+        r_s = u - eta * (g_shape + decouple)
+        u_new = r_s / (1.0 + 2.0 * eta * l2)
+
+        # -------- Geometry step: CE gradient (updated u) + L1 proximal --------
+        g_geo = F.softmax(u_new + v, dim=-1)
+        g_geo.scatter_(1, targets.unsqueeze(1), g_geo.gather(1, targets.unsqueeze(1)) - 1.0)
+        u_new_dot_v = (u_new * v).sum(-1, keepdim=True)
+        decouple_geo = 2.0 * mu * u_new_dot_v * u_new
+        r_g = v - eta * (g_geo + decouple_geo)
+        v_new = torch.sign(r_g) * F.relu(torch.abs(r_g) - th)
+
+        return u_new, v_new
+
+    def param_groups(self, base_lr, backbone_lr_mult=0.1, weight_decay=5e-4):
+        bb_ids = set(id(p) for p in self.backbone.parameters())
+        bb, hd = [], []
+        for p in self.parameters():
+            if not p.requires_grad:
+                continue
+            (bb if id(p) in bb_ids else hd).append(p)
+        g = [{'params': hd, 'lr': base_lr, 'weight_decay': weight_decay}]
+        if bb:
+            g.append({'params': bb, 'lr': base_lr * backbone_lr_mult, 'weight_decay': weight_decay})
+        return g
+
+    def freeze_backbone(self):
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+    def unfreeze_backbone(self):
+        for p in self.backbone.parameters():
+            p.requires_grad = True
+
+
 class _BasicBlock(nn.Module):
     def __init__(self, conv, downsample, act):
         super().__init__()

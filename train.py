@@ -73,6 +73,11 @@ def _build_net(args):
             shape_dim=args.shape_dim, geo_dim=args.geo_dim,
             ista_steps=args.ista_steps,
         ).to(DEVICE)
+    if args.arch == "unrolled":
+        from models import UnrolledNet
+        return UnrolledNet(
+            backbone_type=args.unrolled_backbone, num_classes=NUM_CLASSES,
+        ).to(DEVICE)
     if args.arch == "transfer_adapter":
         return TransferBackboneAdapter(
             model_name=args.transfer_model, num_classes=NUM_CLASSES, pretrained=True,
@@ -267,7 +272,15 @@ def train_one_fold(fold_idx, train_data, val_data, args, i2l, pair_idx=None):
             y_a = y_a.to(DEVICE)
             y_b = y_b.to(DEVICE)
             optimizer.zero_grad()
-            out = net(images)
+            if args.arch == "unrolled":
+                # UnrolledNet: targets 传入 forward 供近端梯度步计算
+                main_logits, logits_shape, Delta = net(images, targets=y_a)
+                loss = lam * nn.CrossEntropyLoss()(main_logits, y_a) + \
+                       (1.0 - lam) * nn.CrossEntropyLoss()(main_logits, y_b)
+                unified = None
+                decoder_out = None
+            else:
+                out = net(images)
             if args.arch == "disentangled":
                 main_logits, unified, logits_shape = out
                 from losses import residual_loss
@@ -423,7 +436,7 @@ def main():
                         choices=["hybrid", "resnet50_unet", "resnet18p", "convnextv2p",
                                  "hybrid_r18stem", "hybrid_cnxstem",
                                  "hybrid_cnxbypassA", "hybrid_cnxbypassB",
-                                 "transfer", "transfer_ms", "transfer_adapter", "disentangled"],
+                                 "transfer", "transfer_ms", "transfer_adapter", "disentangled", "unrolled"],
                         help="hybrid=HybridHandCharNet; resnet50_unet=ResNet50+UNet+LSTM; "
                              "resnet18p=ImageNet 预训练 ResNet18 + 1ch + 前层 Dropout2d; "
                              "convnextv2p=FCMAE+IN1k 预训练 ConvNeXtV2 atto + 1ch; "
@@ -481,6 +494,9 @@ def main():
                         help="disentangled: 结构流特征维度 (默认 192)")
     parser.add_argument("--ista_steps", type=int, default=2,
                         help="disentangled: ChannelISTA 迭代步数 (默认 2; 0=关)")
+    parser.add_argument("--unrolled_backbone", type=str, default="tinyresnet",
+                        choices=["tinyresnet", "tinyresnet_scratch", "mobilenetv4"],
+                        help="unrolled: backbone 类型")
     parser.add_argument("--recon_lambda", type=float, default=0.0,
                         help="transfer_adapter 辅助重建解码器的损失权重 (自监督重建正则; "
                              "0=禁用; 建议 0.1~0.5)")
